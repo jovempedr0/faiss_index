@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faiss-document-index"
+version = "0.1.0"
+description = "Semantic indexing and search (FAISS + OpenAI-compatible embeddings) over documents of any type."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy",
+    "faiss-cpu",
+    "openai>=1.40",
+    "nltk",
+    "python-dotenv",
+    "scikit-learn",
+    "psutil",
+]
+
+[project.optional-dependencies]
+mps = ["torch"]
+ocr = ["pdfplumber", "pytesseract", "pdf2image", "Pillow"]
+dev = ["pytest"]
+
+[tool.setuptools]
+py-modules = ["faiss_index", "config", "constants", "utils_ocr", "i18n"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

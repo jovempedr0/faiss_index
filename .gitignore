@@ -1,0 +1,17 @@
+# Environments
+.venv/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+
+# Local test fixtures (real documents) and generated indices — kept on disk, not versioned
+test/casos/
+test/faiss_index_output/

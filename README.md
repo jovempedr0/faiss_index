@@ -1,0 +1,495 @@
+# FaissDocumentIndex
+
+Semantic indexing and search (FAISS + OpenAI embeddings) over documents of **any
+type** — contracts, reports, evidence, statements of defense, invoices, etc. The
+document type (`document_type`) is always received as a parameter on the methods;
+nothing is fixed on the class.
+
+- Three indexing strategies per document type: **full** (the whole document),
+  **sections** (structural sections, with an LLM-calibrated schema), and **chunks**
+  (sliding text windows).
+- Automatic FAISS index type selection by corpus size (`flat` → `IVFFlat` →
+  `IVFPQ`), with CPU parallelism and, on Apple Silicon, GPU-accelerated search (MPS).
+
+## Table of contents
+
+- [Installation](#installation)
+- [Required setup](#required-setup)
+- [Core concepts](#core-concepts)
+- [Quickstart](#quickstart)
+- [Ways to use it](#ways-to-use-it)
+- [API reference](#api-reference)
+- [On-disk file layout](#on-disk-file-layout)
+- [Performance configuration](#performance-configuration)
+- [Models used](#models-used)
+- [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules)
+- [Log language](#log-language)
+
+## Installation
+
+Required dependencies:
+
+```bash
+pip install numpy faiss-cpu "openai>=1.40" nltk python-dotenv scikit-learn psutil
+```
+
+Alternatively, from this repository (editable install, with the OCR and MPS extras):
+
+```bash
+pip install -e ".[ocr,mps]"
+```
+
+Optional dependency (accelerates search on `flat` indices via GPU on Apple Silicon —
+see [`use_mps`](#performance-configuration)); if absent, everything still works
+normally on CPU:
+
+```bash
+pip install torch
+```
+
+`faiss-cpu` only exists for CPU. FAISS itself has no Metal/MPS backend — that's why
+`torch`/MPS acceleration is done outside of FAISS (see the performance section).
+
+## Required setup
+
+1. **NLTK stopwords** (used by `clean_text`/`remove_stop_words`):
+
+   ```python
+   import nltk
+   nltk.download("stopwords")
+   ```
+
+2. **OpenAI key**: via the `OPENAI_API_KEY` environment variable (or `.env`), or
+   passed directly to the constructor (`openai_key=...`).
+
+3. **Reading PDF/DOC/DOCX**: depends on `extract_text_from_file_ocr_fallback`
+   (`utils_ocr.py`), which in turn needs `pdfplumber`, `pytesseract`, `pdf2image`,
+   `Pillow`, and the `libreoffice` binary on the PATH (to convert `.doc`/`.docx`
+   before OCR). `.txt` files are read directly and don't need any of this.
+   `pytesseract` can be swapped for a vision-capable chat model via
+   `FAISS_INDEX_OCR_VLM_MODEL` — see
+   [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules).
+
+## Core concepts
+
+### `document_type` — never hardcoded
+
+Every method that deals with indices receives `document_type: str` as a parameter.
+The same instance can index and search across multiple document types at once
+(`self.indices` is a dict keyed by `document_type` → by strategy).
+
+### Indexing strategies
+
+| Strategy | What it indexes | Main metadata |
+|---|---|---|
+| `full` | The whole document | `content` (a list with the full text) |
+| `sections` | Each structural section of the document | `section_name`, `section_text` |
+| `chunks` | ~500-word windows, with 50% overlap | `chunk_index`, `chunk_text` |
+
+### LLM-calibrated section schema
+
+The `sections` strategy **doesn't assume any fixed document structure**. Before it
+can be used for a `document_type`, a *schema* must be calibrated (section name →
+text patterns that mark its start), which is done automatically by `build_indices`
+(using the documents themselves as a sample) or manually via
+`register_document_type`. The calibrated schema is cached in memory
+(`self.section_schemas[document_type]`) and persisted to disk
+(`{document_type}_section_schema.json`), so it only needs to be calibrated once per
+type.
+
+If the LLM can't identify any section (a document with no recognizable structure),
+the `sections` strategy is simply skipped for that type — `full` and `chunks` keep
+working normally.
+
+## Quickstart
+
+```python
+from faiss_index import FaissDocumentIndex
+
+idx = FaissDocumentIndex(base_path="./data")
+
+# Builds the indices (calibrates the section schema automatically the first time)
+idx.build_indices(
+    document_type="contract",
+    base_data_dir="./data",
+    output_index_dir="./faiss_index",
+)
+
+# Search on a specific strategy
+result = idx.evaluate_strategy(
+    query="termination clause",
+    document_type="contract",
+    strategy="sections",
+    k=5,
+)
+for r in result["results"]:
+    print(r["rank"], r["distance"], r["metadata"]["file"])
+
+# In a new session: load the already-built indices
+idx2 = FaissDocumentIndex(base_path="./data")
+idx2.load_indices(
+    path_indices="./faiss_index",
+    document_types=["contract"],
+    strategies=["full", "sections", "chunks"],
+)
+```
+
+## Ways to use it
+
+### Before using it: configuration
+
+Before any of the uses below:
+
+1. Install the dependencies ([Installation](#installation)) and run
+   `nltk.download("stopwords")` ([Required setup](#required-setup)).
+2. Make sure `OPENAI_API_KEY` is set (`.env` or `openai_key=...` on the constructor).
+3. If your project's directory structure isn't the default (`./data`,
+   `../faiss_index`, etc.), or you need a non-default `.env`/NLTK data location,
+   adjust the environment variables described in
+   [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules)
+   (`FAISS_INDEX_DOTENV_PATH`, `NLTK_DATA_PATH`, `FAISS_INDEX_BASE_DATA_DIR`,
+   `FAISS_INDEX_OUTPUT_INDEX_DIR`, `FAISS_INDEX_PATH_INDICES`) — and, to force the
+   log language, `FAISS_INDEX_LANG` ([Log language](#log-language)).
+
+   **Important:** `config.py` reads these environment variables exactly once, when
+   the module is imported (`import faiss_index` already triggers `import config`).
+   Set them *before* the import — via `export` in the shell, a `.env` loaded
+   earlier, or `os.environ[...] = ...` as the first lines of your script — never
+   after:
+
+   ```python
+   import os
+   os.environ["FAISS_INDEX_OUTPUT_INDEX_DIR"] = "/data/production/faiss_index"
+
+   from faiss_index import FaissDocumentIndex  # only now does config.py read the variable above
+   ```
+
+### Multiple document types on the same instance
+
+A single instance indexes and searches across several `document_type`s at once —
+each type's section schema, indices, and embeddings stay isolated from one another:
+
+```python
+idx = FaissDocumentIndex(base_path="./data")
+
+for doc_type in ["contract", "invoice"]:
+    idx.build_indices(document_type=doc_type, base_data_dir="./data", output_index_dir="./faiss_index")
+
+contract_result = idx.evaluate_strategy("termination clause", document_type="contract", strategy="sections")
+invoice_result = idx.evaluate_strategy("total amount", document_type="invoice", strategy="chunks")
+```
+
+### Calibrating the section schema manually
+
+`build_indices` calibrates the section schema automatically the first time (using
+the documents themselves as a sample). To control this explicitly — for example,
+calibrating with a hand-picked sample before indexing thousands of documents, or
+recalibrating an existing type:
+
+```python
+schema = idx.register_document_type(
+    document_type="contract",
+    sample_texts=[sample_text_1, sample_text_2, sample_text_3],
+    force_recalibrate=True,  # ignores any schema already cached/on disk
+)
+# {} if the LLM doesn't recognize any section — in that case build_indices skips
+# "sections" and proceeds normally with "full"/"chunks" for that document_type.
+```
+
+### Comparing strategies and picking the best one
+
+`evaluate_strategy` searches on a single strategy; `compare_strategies` +
+`calculate_heuristic_score` run several queries × strategies and score each one
+(speed, distance, variance, file diversity, and optionally `keywords`) to help
+decide which strategy to use in production:
+
+```python
+comparison = idx.compare_strategies(
+    queries=["termination clause", "late payment penalty"],
+    document_type="contract",
+    strategies_compare=["full", "sections", "chunks"],
+    k=15,
+)
+scores = idx.calculate_heuristic_score(comparison, keywords=["termination", "penalty"])
+best_strategy = max(scores, key=lambda s: scores[s]["mean_score"])
+```
+
+`generate_search` is the shortcut for this same flow, cleaning the query first:
+
+```python
+results, scores = idx.generate_search(
+    received_query=["termination clause"],
+    keywords=["termination", "penalty"],  # despite the type hint, it's treated as a list of words
+    document_type="contract",
+    strategies_compare=["full", "chunks"],
+)
+```
+
+### High-level shortcut (e.g.: a search endpoint)
+
+`generate_search_by_type` is meant for application code (e.g.: an HTTP handler): it
+takes the raw query, makes sure the index is loaded (loading it on demand from
+`config.DEFAULT_PATH_INDICES`/`FAISS_INDEX_PATH_INDICES` if it isn't yet), and
+returns just the texts, ready to build a prompt/context:
+
+```python
+chunks = idx.generate_search_by_type(
+    received_query="termination clause",
+    document_type="contract",
+    strategy="chunks",
+    require_gpu=False,
+)
+# chunks: List[str], ready to become the context of an LLM prompt, for example.
+```
+
+Only works with `strategy="chunks"` — the return value reads
+`metadata["chunk_text"]`, a key that only exists in the `chunks` strategy's
+metadata (`full`/`sections` store the text under `content`/`section_text` and will
+raise a `KeyError` here).
+
+### Adding documents without rebuilding the index
+
+To incorporate new documents into indices already loaded in memory (this doesn't
+rebuild the existing ones, it just adds vectors/metadata to each strategy's index
+already present for the `document_type`):
+
+```python
+idx.load_indices(path_indices="./faiss_index", document_types=["contract"], strategies=["full", "chunks"])
+
+new_docs = [("./data/contract/2026-01/new.pdf", extracted_text)]
+idx.add_new_documents(document_type="contract", new_docs=new_docs)
+```
+
+This updates the indices **in memory**; to persist to disk, run `build_indices`
+again (or save the index/metadata manually, following the
+[file layout](#on-disk-file-layout)).
+
+### Managing memory in long-running processes
+
+In a process that serves multiple requests (e.g.: a server), load on demand and
+unload what's no longer needed, instead of keeping everything in memory all the
+time:
+
+```python
+if not idx.is_index_loaded(document_types=["contract"], strategies=["chunks"], require_gpu=False):
+    idx.load_indices(path_indices="./faiss_index", document_types=["contract"], strategies=["chunks"])
+
+# ... use the index ...
+
+idx.unload_indices(document_type="contract", strategy="chunks")  # just that strategy
+idx.unload_all_indices()  # everything
+```
+
+## API reference
+
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
+
+Constructor. Every indexing/performance parameter has a sensible default, but none
+is fixed — see [Performance configuration](#performance-configuration).
+
+### Building indices
+
+- **`build_indices(document_type, base_data_dir='./data', output_index_dir='../faiss_index', doc_limit=None)`**
+  Reads all supported documents under `base_data_dir/document_type/`, calibrates
+  the section schema if needed, generates embeddings (in batches), and
+  builds+saves the `full`, `sections` (if a schema exists), and `chunks` indices.
+
+- **`register_document_type(document_type, sample_texts, force_recalibrate=False)`**
+  Manually calibrates (via LLM) the section schema for a type, from sample texts.
+  Useful for recalibrating (`force_recalibrate=True`) or calibrating before
+  indexing.
+
+- **`add_new_documents(document_type, new_docs)`**
+  Adds new documents (`List[Tuple[path, text]]`) to already-loaded indices, for
+  every strategy that already exists for that `document_type`.
+
+### Search
+
+- **`evaluate_strategy(query, document_type, strategy, k=10) -> Dict`**
+  Searches on a single strategy. Returns search time, results (rank, distance,
+  metadata, cosine similarity), and aggregated statistics.
+
+- **`compare_strategies(queries, document_type, strategies_compare, k=15) -> Dict`**
+  Runs `evaluate_strategy` for several queries × strategies, for comparison.
+
+- **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`**
+  Scores each strategy (speed, distance, variance, file diversity, and,
+  optionally, presence of `keywords`) to help pick which strategy to use.
+
+- **`generate_search(received_query, keywords, document_type, strategies_compare) -> Tuple[Dict, Dict]`**
+  Shortcut: cleans the query, compares strategies, and computes the heuristic
+  scores.
+
+- **`generate_search_by_type(received_query, document_type, strategy, require_gpu) -> List[str]`**
+  High-level shortcut: loads the index if it's not already in memory, searches
+  with `k=5`, and returns just the found chunks' texts.
+
+### Lifecycle of the in-memory indices
+
+- **`load_indices(path_indices, document_types, strategies, use_gpu=True) -> dict`**
+  Loads the index, metadata, embeddings (`mmap`), and section schema from disk.
+  `use_gpu` here is the **CUDA** path (irrelevant on macOS — see
+  [`use_mps`](#performance-configuration) for real acceleration on Apple Silicon).
+  When the installed FAISS has no CUDA support (the case for `faiss-cpu`, the only
+  variant installable on macOS), this is detected before trying to move the index
+  — it silently falls back to CPU (without trying `StandardGpuResources()` and
+  failing on every index loaded).
+
+- **`is_index_loaded(document_types, strategies, require_gpu) -> bool`**
+  Checks whether all requested combinations are already loaded (and GPU-accelerated
+  — CUDA or MPS —, if `require_gpu=True`).
+
+- **`unload_indices(document_type, strategy=None)`** / **`unload_all_indices()`**
+  Frees indices from memory.
+
+### Document reading/processing (used internally, but exposed)
+
+- **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback).
+- **`extract_sections(text, document_type) -> Dict[str, str]`** — uses the calibrated schema.
+- **`get_embeddings(texts) -> np.ndarray`** — generates embeddings in batches.
+- **`create_embeddings_full/sections/chunks(docs, ...) -> Tuple[np.ndarray, List]`**
+
+## On-disk file layout
+
+```
+<output_index_dir>/
+  <document_type>/
+    <document_type>_section_schema.json
+    <document_type>_full.index
+    <document_type>_full_metadata.json
+    <document_type>_full_embeddings.npy
+    <document_type>_sections.index          # if a schema was calibrated
+    <document_type>_sections_metadata.json
+    <document_type>_sections_embeddings.npy
+    <document_type>_chunks.index
+    <document_type>_chunks_metadata.json
+    <document_type>_chunks_embeddings.npy
+```
+
+`load_indices(path_indices=..., document_types=[...])` expects exactly this layout
+(one subfolder per `document_type` inside `path_indices`).
+
+## Performance configuration
+
+Everything below is configurable via the constructor — nothing is hardcoded in the
+middle of the code:
+
+| Parameter | Effect |
+|---|---|
+| `embedding_batch_size` | How many texts go per call to the embeddings API (fewer round-trips). |
+| `num_threads` | Threads FAISS uses for search (`None` = all cores). |
+| `index_type` | `"auto"` (by size) or fixed: `"flat"`, `"ivf_flat"`, `"ivf_pq"`. |
+| `auto_index_thresholds` | `(flat_limit, ivf_flat_limit)` used when `index_type="auto"`. Defaults to `(10_000, 80_000)`. |
+| `ivf_nlist` / `ivf_nprobe` | Number of clusters / clusters visited per search in `ivf_flat`/`ivf_pq`. |
+| `pq_m` / `pq_nbits` | Compression parameters for `ivf_pq`. |
+| `use_mps` | Accelerates search on `flat` indices via GPU (Apple Silicon), when `torch` with MPS is available. `ivf_*` indices keep using FAISS's native search. |
+
+Automatic index type selection (`index_type="auto"`, the default):
+
+- `n ≤ auto_index_thresholds[0]` → `IndexFlatL2` (exact search)
+- `auto_index_thresholds[0] < n ≤ auto_index_thresholds[1]` → `IndexIVFFlat` (approximate)
+- `n > auto_index_thresholds[1]` → `IndexIVFPQ` (approximate + compressed)
+
+## Models used
+
+FaissDocumentIndex uses two independent OpenAI models, both configurable on the
+constructor:
+
+- **`embedding_model`** — generates the vectors that FAISS indexes and searches.
+  Two OpenAI models are known out of the box (`constants.EMBEDDING_DIMENSIONS`),
+  and their dimension is derived automatically:
+
+  - `text-embedding-3-large` (3072 dimensions, the default) — better search
+    quality, at the cost of a larger index/embeddings on disk (`.npy` files) and
+    more memory per vector.
+  - `text-embedding-3-small` (1536 dimensions) — half the vector size, so a
+    lighter index that's faster to load/search and cheaper to generate, at some
+    cost to search quality. Worth considering for large corpora, alongside the
+    `index_type`/`auto_index_thresholds` choice in
+    [Performance configuration](#performance-configuration).
+
+  Any other `embedding_model` (e.g., a local/non-OpenAI embedding model served
+  through an OpenAI-compatible API — see `openai_key`) requires passing
+  **`embedding_dim`** explicitly with that model's actual output dimension;
+  otherwise `__init__` raises `ValueError`.
+
+- **`section_extraction_model`** — used only by
+  `register_document_type`/`_infer_section_schema_via_llm` to calibrate the
+  section schema: a single structured-output call per `document_type`, cached
+  afterward (see [LLM-calibrated section schema](#llm-calibrated-section-schema)).
+  Defaults to `gpt-4o-mini` — since it's a one-off, small, structured task (not
+  the actual search or generation path), a lighter chat model is enough; there's
+  no need for a larger model here.
+
+## The `config.py` and `constants.py` modules
+
+`utils_ocr.py` lives alongside `faiss_index.py` in this same directory and is
+imported as a sibling module (`from utils_ocr import ...`) — there's no more
+dependency on an external `src.utils` package. For the same reason, two other
+sibling modules hold what used to be scattered (or hardcoded) inside
+`faiss_index.py`:
+
+- **`constants.py`** — fixed protocol/algorithm values that don't vary by
+  environment: supported file extensions, embedding dimension per model, the JSON
+  Schema used to calibrate sections via LLM, sampling/training limits, etc.
+  They're not meant to be overridden — they just name magic numbers/strings that
+  used to be loose in the code.
+
+- **`config.py`** — everything that's environment/installation-dependent: loading
+  `.env` and NLTK data, and the default values for `FaissDocumentIndex`'s
+  parameters (embedding model, index thresholds, paths, etc.), all with a fallback
+  to an environment variable. Nothing here assumes any specific project's
+  directory structure:
+
+  - **`FAISS_INDEX_DOTENV_PATH`**: path to a specific `.env`. If not set,
+    `load_dotenv()` looks for a `.env` starting from the current directory and
+    walking up the tree.
+  - **`NLTK_DATA_PATH`**: extra NLTK data directory. If not set, only NLTK's own
+    default paths are used (e.g.: `~/nltk_data`, populated by
+    `nltk.download("stopwords")` — see [Required setup](#required-setup)).
+  - **`FAISS_INDEX_BASE_DATA_DIR`** / **`FAISS_INDEX_OUTPUT_INDEX_DIR`**: defaults
+    for `base_data_dir`/`output_index_dir` in `build_indices`. Default `./data` /
+    `../faiss_index`.
+  - **`FAISS_INDEX_PATH_INDICES`**: directory used by `generate_search_by_type` to
+    auto-load an index not yet in memory (previously fixed at
+    `../src/utils/mounted_volume/faiss_index` — an assumption about a specific
+    project structure that no longer applies here). Default `../faiss_index`.
+  - **`FAISS_INDEX_OCR_VLM_MODEL`**: switches image OCR (`utils_ocr.process_image`,
+    used as a fallback for PDF pages with no extractable text) from `pytesseract`
+    (the default, when unset) to a vision-capable chat model, called through the
+    OpenAI-compatible client — useful to point at a local server (LM Studio, oMLX,
+    vLLM, etc.) serving an OCR-purpose VLM, e.g. `Unlimited-OCR`. Uses
+    `OPENAI_API_KEY`/`OPENAI_BASE_URL` from the environment (the OpenAI SDK's own
+    convention), independent of the `openai_key` passed to `FaissDocumentIndex`.
+
+## Log language
+
+All `logger.*`/`print()` messages in `faiss_index.py`, `config.py`, and
+`utils_ocr.py` go through `i18n.py`, which uses Python's standard `gettext`. The
+text in the source code is in English (that's gettext's `msgid`);
+`locale/pt/LC_MESSAGES/` carries the Portuguese translation.
+
+The language is detected from the machine's locale — environment variables
+`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, in that priority order (that's how
+`gettext.translation()` decides when no language is passed explicitly). On a
+Portuguese machine (`LANG=pt_BR.UTF-8`, for example), the logs come out in
+Portuguese; on any other language — including English, or any language without a
+translated catalog — they fall back to the original English text (gettext's
+default behavior when there's no translation: it returns the `msgid` as-is).
+
+- **`FAISS_INDEX_LANG`**: forces a language (e.g.: `pt`), independent of the
+  machine's locale.
+
+### Adding a new language
+
+1. Generate a `.po` from the template: `msginit --locale=es --input=locale/faiss_index.pot --output-file=locale/es/LC_MESSAGES/faiss_index.po` (creates the `locale/es/LC_MESSAGES/` directory if needed).
+2. Translate the `msgstr` entries in `locale/es/LC_MESSAGES/faiss_index.po`.
+3. Compile to `.mo`: `msgfmt locale/es/LC_MESSAGES/faiss_index.po -o locale/es/LC_MESSAGES/faiss_index.mo`.
+
+`msginit`/`msgfmt` are part of the `gettext` package (e.g.: `brew install gettext`
+on macOS, `apt install gettext` on Linux) — they're only needed to
+*generate/recompile* catalogs, not at runtime: the `gettext` used by `i18n.py` is
+Python's standard module, no new dependency.
+
+This makes the module usable from any project directory, without assuming a fixed
+structure (`src/utils/...`) around it.

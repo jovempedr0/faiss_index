@@ -1,0 +1,229 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: faiss_index\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+
+msgid "MPS (Apple Silicon GPU) available — search on 'flat' indices will be accelerated via torch."
+msgstr ""
+
+msgid "Failed to check MPS availability: %(error)s. Using FAISS CPU."
+msgstr ""
+
+msgid "Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s"
+msgstr ""
+
+msgid "The 'document_types' and 'strategies' lists cannot be empty."
+msgstr ""
+
+msgid "All %(num_combinations)s requested index combinations are already loaded."
+msgstr ""
+
+msgid "Index for document type '%(document_type)s' not found."
+msgstr ""
+
+msgid "Strategy '%(strategy)s' for document type '%(document_type)s' not found."
+msgstr ""
+
+msgid "Data for '%(document_type)s/%(strategy)s' is not loaded (None)."
+msgstr ""
+
+msgid "Index for '%(document_type)s/%(strategy)s' is not on GPU, but was expected to be."
+msgstr ""
+
+msgid "Text became empty after cleaning; using a zero vector to preserve alignment with metadata."
+msgstr ""
+
+msgid "Section schema for '%(document_type)s' is already cached. Skipping recalibration."
+msgstr ""
+
+msgid "Calibrating section schema for '%(document_type)s' via LLM (%(model)s) with %(num_samples)s sample document(s)..."
+msgstr ""
+
+msgid "The LLM did not identify any section for '%(document_type)s'. The 'sections' strategy will be skipped for this document type."
+msgstr ""
+
+msgid "Failed to calibrate section schema via LLM for '%(document_type)s': %(error)s"
+msgstr ""
+
+msgid "Section schema for '%(document_type)s' saved to '%(path)s'."
+msgstr ""
+
+msgid "Section schema for '%(document_type)s' loaded from '%(path)s'."
+msgstr ""
+
+msgid "Failed to load section schema from '%(path)s': %(error)s"
+msgstr ""
+
+msgid "Error reading %(file_path)s: %(error)s"
+msgstr ""
+
+msgid "'flat' index created with %(n)s vectors (exact search)."
+msgstr ""
+
+msgid "'%(kind)s' index created with %(n)s vectors, nlist=%(nlist)s, nprobe=%(nprobe)s (approximate search)."
+msgstr ""
+
+msgid "No embeddings generated for strategy '%(strategy_name)s'. Skipping."
+msgstr ""
+
+msgid "Building and saving index for strategy: '%(strategy_name)s'..."
+msgstr ""
+
+msgid "Index for '%(strategy_name)s' saved successfully."
+msgstr ""
+
+msgid "No documents found for document type: %(document_type)s"
+msgstr ""
+
+msgid "Found %(total)s matching file(s). Limit of %(doc_limit)s applied."
+msgstr ""
+
+msgid "Processing %(count)s documents of %(document_type)s..."
+msgstr ""
+
+msgid "No section schema for '%(document_type)s'. The 'sections' strategy will not be built."
+msgstr ""
+
+msgid "\nIndex construction for '%(document_type)s' complete."
+msgstr ""
+
+msgid "\nQuery: %(query)s..."
+msgstr ""
+
+msgid "  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s"
+msgstr ""
+
+msgid "Index for '%(document_type)s/%(strategy)s' found. Running search"
+msgstr ""
+
+msgid "Index for '%(document_type)s/%(strategy)s' not found. Loading now..."
+msgstr ""
+
+msgid "Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search..."
+msgstr ""
+
+msgid "===> Memory Usage (%(stage)s): %(rss_gb)s GB"
+msgstr ""
+
+msgid "Start of `load_indices`"
+msgstr ""
+
+msgid "Error: Directory '%(document_dir)s' for document type '%(document_type)s' not found."
+msgstr ""
+
+msgid "Loading data from '%(document_dir)s'..."
+msgstr ""
+
+msgid "End of `load_indices`"
+msgstr ""
+
+msgid "   FAISS installed without CUDA GPU support — keeping '%(strategy)s' on CPU."
+msgstr ""
+
+msgid "   Initializing GPU resources for FAISS..."
+msgstr ""
+
+msgid "   Moving index '%(strategy)s' to GPU..."
+msgstr ""
+
+msgid "After moving index '%(strategy)s' to GPU"
+msgstr ""
+
+msgid "Successfully moved index to GPU."
+msgstr ""
+
+msgid "    Failed to move index to GPU: %(error)s. Using CPU."
+msgstr ""
+
+msgid "-> Loading strategy '%(strategy)s'..."
+msgstr ""
+
+msgid "   Warning: Files for strategy '%(strategy)s' of type '%(document_type)s' not found. Skipping."
+msgstr ""
+
+msgid "Before loading index '%(strategy)s'"
+msgstr ""
+
+msgid "After loading index '%(strategy)s' to CPU"
+msgstr ""
+
+msgid "Before loading metadata '%(strategy)s'"
+msgstr ""
+
+msgid "After loading metadata '%(strategy)s'"
+msgstr ""
+
+msgid "   Successfully loaded '%(strategy)s': %(ntotal)s vectors on device '%(device)s'."
+msgstr ""
+
+msgid "   An error occurred while loading '%(strategy)s': %(error)s"
+msgstr ""
+
+msgid "Info: No index loaded for document type '%(document_type)s'."
+msgstr ""
+
+msgid "Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded."
+msgstr ""
+
+msgid "Info: No other strategy remains, removing entry for '%(document_type)s'."
+msgstr ""
+
+msgid "Warning: Strategy '%(strategy)s' not found for '%(document_type)s'."
+msgstr ""
+
+msgid " Success: All indices for '%(document_type)s' have been unloaded."
+msgstr ""
+
+msgid "Adding new documents to strategy '%(strategy)s' for '%(document_type)s'..."
+msgstr ""
+
+msgid "New documents added to strategy '%(strategy)s' for '%(document_type)s'. Total now: %(ntotal)s vectors."
+msgstr ""
+
+msgid "Info: No index is currently loaded."
+msgstr ""
+
+msgid "Info: %(num_document_types)s document type(s) found. Unloading all indices..."
+msgstr ""
+
+msgid "Success: All indices have been unloaded and memory has been freed."
+msgstr ""
+
+msgid "NLTK corpus %(corpus)s"
+msgstr ""
+
+msgid "Loaded stopwords: %(count)s words."
+msgstr ""
+
+msgid "Error converting file %(file_path)s using LibreOffice: %(error)s"
+msgstr ""
+
+msgid "Unexpected error during conversion of %(file_path)s: %(error)s"
+msgstr ""
+
+msgid "Converting file to PDF..."
+msgstr ""
+
+msgid "Error processing file %(file_path)s: %(error)s"
+msgstr ""
+
+msgid "Temporary file removed: %(temp_pdf_path)s"
+msgstr ""
+
+msgid "Error trying to delete temporary file %(temp_pdf_path)s: %(error)s"
+msgstr ""
+
+msgid "Error extracting text from page %(page)s: %(error)s"
+msgstr ""
+
+msgid "Using OCR as fallback for %(count)s problematic pages."
+msgstr ""
+
+msgid "OCR completed for problematic pages."
+msgstr ""
+
+msgid "Error in image OCR: %(error)s"
+msgstr ""

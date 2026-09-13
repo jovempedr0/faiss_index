@@ -1,0 +1,230 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: faiss_index\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pt\n"
+
+
+msgid "MPS (Apple Silicon GPU) available — search on 'flat' indices will be accelerated via torch."
+msgstr "MPS (GPU Apple Silicon) disponível — busca em índices 'flat' será acelerada via torch."
+
+msgid "Failed to check MPS availability: %(error)s. Using FAISS CPU."
+msgstr "Falha ao verificar disponibilidade de MPS: %(error)s. Usando FAISS CPU."
+
+msgid "Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s"
+msgstr "Inicializado FaissDocumentIndex com modelo %(model)s e dimensão %(dim)s"
+
+msgid "The 'document_types' and 'strategies' lists cannot be empty."
+msgstr "As listas 'document_types' e 'strategies' não podem estar vazias."
+
+msgid "All %(num_combinations)s requested index combinations are already loaded."
+msgstr "Todas as %(num_combinations)s combinações de índices solicitadas já estão carregadas."
+
+msgid "Index for document type '%(document_type)s' not found."
+msgstr "Índice para o tipo de documento '%(document_type)s' não encontrado."
+
+msgid "Strategy '%(strategy)s' for document type '%(document_type)s' not found."
+msgstr "Estratégia '%(strategy)s' para o tipo de documento '%(document_type)s' não encontrada."
+
+msgid "Data for '%(document_type)s/%(strategy)s' is not loaded (None)."
+msgstr "Dados para '%(document_type)s/%(strategy)s' não estão carregados (None)."
+
+msgid "Index for '%(document_type)s/%(strategy)s' is not on GPU, but was expected to be."
+msgstr "Índice para '%(document_type)s/%(strategy)s' não está na GPU, mas era esperado."
+
+msgid "Text became empty after cleaning; using a zero vector to preserve alignment with metadata."
+msgstr "Texto ficou vazio após limpeza; usando vetor zero para preservar o alinhamento com metadata."
+
+msgid "Section schema for '%(document_type)s' is already cached. Skipping recalibration."
+msgstr "Schema de seções para '%(document_type)s' já está em cache. Ignorando recalibração."
+
+msgid "Calibrating section schema for '%(document_type)s' via LLM (%(model)s) with %(num_samples)s sample document(s)..."
+msgstr "Calibrando schema de seções para '%(document_type)s' via LLM (%(model)s) com %(num_samples)s documento(s) de exemplo..."
+
+msgid "The LLM did not identify any section for '%(document_type)s'. The 'sections' strategy will be skipped for this document type."
+msgstr "O LLM não identificou nenhuma seção para '%(document_type)s'. A estratégia 'sections' será pulada para esse tipo de documento."
+
+msgid "Failed to calibrate section schema via LLM for '%(document_type)s': %(error)s"
+msgstr "Falha ao calibrar schema de seções via LLM para '%(document_type)s': %(error)s"
+
+msgid "Section schema for '%(document_type)s' saved to '%(path)s'."
+msgstr "Schema de seções para '%(document_type)s' salvo em '%(path)s'."
+
+msgid "Section schema for '%(document_type)s' loaded from '%(path)s'."
+msgstr "Schema de seções para '%(document_type)s' carregado de '%(path)s'."
+
+msgid "Failed to load section schema from '%(path)s': %(error)s"
+msgstr "Falha ao carregar schema de seções de '%(path)s': %(error)s"
+
+msgid "Error reading %(file_path)s: %(error)s"
+msgstr "Erro ao ler %(file_path)s: %(error)s"
+
+msgid "'flat' index created with %(n)s vectors (exact search)."
+msgstr "Índice 'flat' criado com %(n)s vetores (busca exata)."
+
+msgid "'%(kind)s' index created with %(n)s vectors, nlist=%(nlist)s, nprobe=%(nprobe)s (approximate search)."
+msgstr "Índice '%(kind)s' criado com %(n)s vetores, nlist=%(nlist)s, nprobe=%(nprobe)s (busca aproximada)."
+
+msgid "No embeddings generated for strategy '%(strategy_name)s'. Skipping."
+msgstr "Nenhum embedding gerado para a estratégia '%(strategy_name)s'. Pulando."
+
+msgid "Building and saving index for strategy: '%(strategy_name)s'..."
+msgstr "Construindo e salvando índice para a estratégia: '%(strategy_name)s'..."
+
+msgid "Index for '%(strategy_name)s' saved successfully."
+msgstr "Índice para '%(strategy_name)s' salvo com sucesso."
+
+msgid "No documents found for document type: %(document_type)s"
+msgstr "Nenhum documento encontrado para o tipo de documento: %(document_type)s"
+
+msgid "Found %(total)s matching file(s). Limit of %(doc_limit)s applied."
+msgstr "Encontrado(s) %(total)s arquivo(s) correspondente(s). Limite de %(doc_limit)s aplicado."
+
+msgid "Processing %(count)s documents of %(document_type)s..."
+msgstr "Processando %(count)s documentos de %(document_type)s..."
+
+msgid "No section schema for '%(document_type)s'. The 'sections' strategy will not be built."
+msgstr "Sem schema de seções para '%(document_type)s'. Estratégia 'sections' não será construída."
+
+msgid "\nIndex construction for '%(document_type)s' complete."
+msgstr "\nConstrução de índices para '%(document_type)s' concluída."
+
+msgid "\nQuery: %(query)s..."
+msgstr "\nQuery: %(query)s..."
+
+msgid "  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s"
+msgstr "  %(strategy)s: tempo=%(time)ss, dist_média=%(dist)s"
+
+msgid "Index for '%(document_type)s/%(strategy)s' found. Running search"
+msgstr "Índice para '%(document_type)s/%(strategy)s' encontrado. Gerando busca"
+
+msgid "Index for '%(document_type)s/%(strategy)s' not found. Loading now..."
+msgstr "Índice para '%(document_type)s/%(strategy)s' não encontrado. Carregando agora..."
+
+msgid "Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search..."
+msgstr "Índice para '%(document_type)s/%(strategy)s' carregado - '%(is_now_loaded)s'. Executando busca..."
+
+msgid "===> Memory Usage (%(stage)s): %(rss_gb)s GB"
+msgstr "===> Uso de Memória (%(stage)s): %(rss_gb)s GB"
+
+msgid "Start of `load_indices`"
+msgstr "Início de `load_indices`"
+
+msgid "Error: Directory '%(document_dir)s' for document type '%(document_type)s' not found."
+msgstr "Erro: Diretório '%(document_dir)s' para o tipo de documento '%(document_type)s' não encontrado."
+
+msgid "Loading data from '%(document_dir)s'..."
+msgstr "Carregando dados de '%(document_dir)s'..."
+
+msgid "End of `load_indices`"
+msgstr "Fim de `load_indices`"
+
+msgid "   FAISS installed without CUDA GPU support — keeping '%(strategy)s' on CPU."
+msgstr "   FAISS instalado sem suporte a GPU CUDA — mantendo '%(strategy)s' na CPU."
+
+msgid "   Initializing GPU resources for FAISS..."
+msgstr "   Inicializando recursos da GPU para FAISS..."
+
+msgid "   Moving index '%(strategy)s' to GPU..."
+msgstr "   Movendo índice '%(strategy)s' para a GPU..."
+
+msgid "After moving index '%(strategy)s' to GPU"
+msgstr "Após mover índice '%(strategy)s' para GPU"
+
+msgid "Successfully moved index to GPU."
+msgstr "Sucesso ao mover índice para a GPU."
+
+msgid "    Failed to move index to GPU: %(error)s. Using CPU."
+msgstr "    Falha ao mover índice para a GPU: %(error)s. Usando CPU."
+
+msgid "-> Loading strategy '%(strategy)s'..."
+msgstr "-> Carregando estratégia '%(strategy)s'..."
+
+msgid "   Warning: Files for strategy '%(strategy)s' of type '%(document_type)s' not found. Skipping."
+msgstr "   Aviso: Arquivos para a estratégia '%(strategy)s' do tipo '%(document_type)s' não encontrados. Pulando."
+
+msgid "Before loading index '%(strategy)s'"
+msgstr "Antes de carregar índice '%(strategy)s'"
+
+msgid "After loading index '%(strategy)s' to CPU"
+msgstr "Após carregar índice '%(strategy)s' para CPU"
+
+msgid "Before loading metadata '%(strategy)s'"
+msgstr "Antes de carregar metadados '%(strategy)s'"
+
+msgid "After loading metadata '%(strategy)s'"
+msgstr "Após carregar metadados '%(strategy)s'"
+
+msgid "   Successfully loaded '%(strategy)s': %(ntotal)s vectors on device '%(device)s'."
+msgstr "   Sucesso ao carregar '%(strategy)s': %(ntotal)s vetores no dispositivo '%(device)s'."
+
+msgid "   An error occurred while loading '%(strategy)s': %(error)s"
+msgstr "   Ocorreu um erro ao carregar '%(strategy)s': %(error)s"
+
+msgid "Info: No index loaded for document type '%(document_type)s'."
+msgstr "Info: Nenhum índice carregado para o tipo de documento '%(document_type)s'."
+
+msgid "Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded."
+msgstr "Sucesso: Estratégia '%(strategy)s' para '%(document_type)s' foi desalocada."
+
+msgid "Info: No other strategy remains, removing entry for '%(document_type)s'."
+msgstr "Info: Nenhuma outra estratégia restou, removendo entrada para '%(document_type)s'."
+
+msgid "Warning: Strategy '%(strategy)s' not found for '%(document_type)s'."
+msgstr "Aviso: Estratégia '%(strategy)s' não encontrada para '%(document_type)s'."
+
+msgid " Success: All indices for '%(document_type)s' have been unloaded."
+msgstr " Sucesso: Todos os índices para '%(document_type)s' foram desalocados."
+
+msgid "Adding new documents to strategy '%(strategy)s' for '%(document_type)s'..."
+msgstr "Adicionando novos documentos à estratégia '%(strategy)s' para '%(document_type)s'..."
+
+msgid "New documents added to strategy '%(strategy)s' for '%(document_type)s'. Total now: %(ntotal)s vectors."
+msgstr "Novos documentos adicionados à estratégia '%(strategy)s' para '%(document_type)s'. Total agora: %(ntotal)s vetores."
+
+msgid "Info: No index is currently loaded."
+msgstr "Info: Nenhum índice está carregado no momento."
+
+msgid "Info: %(num_document_types)s document type(s) found. Unloading all indices..."
+msgstr "Info: %(num_document_types)s tipo(s) de documento encontrados. Descarregando todos os índices..."
+
+msgid "Success: All indices have been unloaded and memory has been freed."
+msgstr "Sucesso: Todos os índices foram desalocados e a memória foi liberada."
+
+msgid "NLTK corpus %(corpus)s"
+msgstr "NLTK corpus %(corpus)s"
+
+msgid "Loaded stopwords: %(count)s words."
+msgstr "Stopwords carregadas: %(count)s palavras."
+
+msgid "Error converting file %(file_path)s using LibreOffice: %(error)s"
+msgstr "Erro ao converter o arquivo %(file_path)s usando LibreOffice: %(error)s"
+
+msgid "Unexpected error during conversion of %(file_path)s: %(error)s"
+msgstr "Erro inesperado durante a conversão de %(file_path)s: %(error)s"
+
+msgid "Converting file to PDF..."
+msgstr "Convertendo arquivo para PDF..."
+
+msgid "Error processing file %(file_path)s: %(error)s"
+msgstr "Erro ao processar arquivo %(file_path)s: %(error)s"
+
+msgid "Temporary file removed: %(temp_pdf_path)s"
+msgstr "Arquivo temporário removido: %(temp_pdf_path)s"
+
+msgid "Error trying to delete temporary file %(temp_pdf_path)s: %(error)s"
+msgstr "Erro ao tentar apagar o arquivo temporário %(temp_pdf_path)s: %(error)s"
+
+msgid "Error extracting text from page %(page)s: %(error)s"
+msgstr "Erro ao extrair texto da página %(page)s: %(error)s"
+
+msgid "Using OCR as fallback for %(count)s problematic pages."
+msgstr "Usando OCR como fallback para %(count)s páginas problemáticas."
+
+msgid "OCR completed for problematic pages."
+msgstr "OCR concluído para páginas problemáticas."
+
+msgid "Error in image OCR: %(error)s"
+msgstr "Erro no OCR da imagem: %(error)s"
