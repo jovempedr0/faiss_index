@@ -30,6 +30,7 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
 - [Plugging in a custom provider](#plugging-in-a-custom-provider)
 - [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules)
 - [Log language](#log-language)
+- [Testing](#testing)
 
 ## Installation
 
@@ -587,3 +588,18 @@ Python's standard module, no new dependency.
 
 This makes the module usable from any project directory, without assuming a fixed
 structure (`src/utils/...`) around it.
+
+## Testing
+
+```bash
+pytest              # unit tests, mocked providers — no network, no cost, no server needed
+pytest -m integration -v   # + integration test against a real, live OpenAI-compatible server
+```
+
+The integration test (`tests/test_integration_local_model.py`) is excluded by default
+(`addopts` in `pyproject.toml`) and skips itself (doesn't fail) if `OPENAI_API_KEY`
+isn't set or the server isn't reachable — it builds a tiny throwaway index and runs
+`evaluate_strategy`/`evaluate_strategy_hybrid` for real. It defaults to this project's
+own local dev setup (oMLX serving `jina-embeddings-v5-text-small-retrieval-mlx` +
+`Qwen3-14B-4bit`); point it at different models via `FAISS_INDEX_TEST_EMBEDDING_MODEL`/
+`FAISS_INDEX_TEST_EMBEDDING_DIM`/`FAISS_INDEX_TEST_CHAT_MODEL`.

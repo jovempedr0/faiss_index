@@ -33,3 +33,7 @@ faiss_index = ["locale/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires a live OpenAI-compatible server (OPENAI_BASE_URL/OPENAI_API_KEY) with real models — excluded by default, run with `pytest -m integration`.",
+]
