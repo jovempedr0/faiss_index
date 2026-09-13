@@ -1,9 +1,14 @@
 # FaissDocumentIndex
 
-Semantic indexing and search (FAISS + OpenAI embeddings) over documents of **any
-type** — contracts, reports, evidence, statements of defense, invoices, etc. The
-document type (`document_type`) is always received as a parameter on the methods;
-nothing is fixed on the class.
+Semantic indexing and search (FAISS + pluggable embedding/chat providers) over
+documents of **any type** — contracts, reports, evidence, statements of defense,
+invoices, etc. The document type (`document_type`) is always received as a parameter
+on the methods; nothing is fixed on the class.
+
+By default, embeddings and section-schema calibration go through an OpenAI-compatible
+provider (the real OpenAI API, or any local server that speaks its wire protocol — LM
+Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
+[Plugging in a custom provider](#plugging-in-a-custom-provider).
 
 - Three indexing strategies per document type: **full** (the whole document),
   **sections** (structural sections, with an LLM-calibrated schema), and **chunks**
@@ -60,7 +65,9 @@ pip install torch
    nltk.download("stopwords")
    ```
 
-2. **OpenAI key**: via the `OPENAI_API_KEY` environment variable (or `.env`), or
+2. **OpenAI key** (only for the default provider — see
+   [Plugging in a custom provider](#plugging-in-a-custom-provider) to use a different
+   backend instead): via the `OPENAI_API_KEY` environment variable (or `.env`), or
    passed directly to the constructor (`openai_key=...`).
 
 3. **Reading PDF/DOC/DOCX**: depends on `extract_text_from_file_ocr_fallback`
@@ -292,10 +299,13 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
+`embedding_provider`/`chat_provider` override the default OpenAI-compatible backend
+built from `openai_key`/`embedding_model`/`section_extraction_model` — see
+[Plugging in a custom provider](#plugging-in-a-custom-provider).
 
 ### Building indices
 
@@ -402,8 +412,9 @@ Automatic index type selection (`index_type="auto"`, the default):
 
 ## Models used
 
-FaissDocumentIndex uses two independent OpenAI models, both configurable on the
-constructor:
+With the default provider (see [Plugging in a custom provider](#plugging-in-a-custom-provider)
+for anything else), FaissDocumentIndex uses two independent OpenAI models, both
+configurable on the constructor:
 
 - **`embedding_model`** — generates the vectors that FAISS indexes and searches.
   Two OpenAI models are known out of the box (`constants.EMBEDDING_DIMENSIONS`),
