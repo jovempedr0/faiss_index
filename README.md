@@ -213,6 +213,32 @@ schema = idx.register_document_type(
 # "sections" and proceeds normally with "full"/"chunks" for that document_type.
 ```
 
+### Hybrid search (dense + BM25)
+
+Pure dense (embedding) search can miss exact terms — names, case/process numbers,
+codes — that don't carry much semantic weight but matter a lot for recall.
+`evaluate_strategy_hybrid` fuses the dense ranking with a BM25 (lexical) ranking via
+Reciprocal Rank Fusion, so a document that only wins on the exact-term match still
+surfaces:
+
+```python
+result = idx.evaluate_strategy_hybrid(
+    query="processo 0829366-83.2025.8.14.0301",
+    document_type="contract",
+    strategy="chunks",
+    k=5,
+)
+for r in result["results"]:
+    print(r["rank"], r["rrf_score"], r["metadata"]["file"])
+```
+
+The BM25 side is built lazily, in memory, from the metadata already loaded for that
+`document_type`/`strategy` (no extra files on disk, no LLM/embedding calls) and cached
+on the instance — invalidated automatically by `add_new_documents`/`unload_indices`.
+Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
+(whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
+`similarity`.
+
 ### Comparing strategies and picking the best one
 
 `evaluate_strategy` searches on a single strategy; `compare_strategies` +
@@ -328,6 +354,11 @@ built from `openai_key`/`embedding_model`/`section_extraction_model` — see
 - **`evaluate_strategy(query, document_type, strategy, k=10) -> Dict`**
   Searches on a single strategy. Returns search time, results (rank, distance,
   metadata, cosine similarity), and aggregated statistics.
+
+- **`evaluate_strategy_hybrid(query, document_type, strategy, k=10, candidate_pool=None, rrf_k=60) -> Dict`**
+  Fuses dense (FAISS) and lexical (BM25) rankings via Reciprocal Rank Fusion — see
+  [Hybrid search](#hybrid-search-dense--bm25). Results carry `rrf_score`/
+  `dense_rank`/`bm25_rank` instead of `distance`/`similarity`.
 
 - **`compare_strategies(queries, document_type, strategies_compare, k=15) -> Dict`**
   Runs `evaluate_strategy` for several queries × strategies, for comparison.

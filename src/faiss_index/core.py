@@ -9,6 +9,8 @@ import time
 import logging
 import psutil
 
+from rank_bm25 import BM25Okapi
+
 from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
@@ -163,6 +165,9 @@ class FaissDocumentIndex:
         self.embedding_model = embedding_model
         self.section_extraction_model = section_extraction_model
         self.section_schemas: Dict[str, Dict[str, List[str]]] = {}
+        # Lazily built (from already-loaded metadata) and cached per document_type/strategy
+        # the first time evaluate_strategy_hybrid is called for that combination.
+        self._bm25_indices: Dict[str, Dict[str, BM25Okapi]] = {}
         self.embedding_batch_size = embedding_batch_size
         self.index_type = index_type
         self.auto_index_thresholds = auto_index_thresholds
@@ -806,21 +811,11 @@ class FaissDocumentIndex:
         query_embedding = self.get_embeddings([query])
 
         start_time = time.time()
-        if self._should_use_mps(index):
-            distances, indices = self._mps_flat_search(index, query_embedding, k)
-        else:
-            distances, indices = index.search(query_embedding.astype('float32'), k)
+        valid_indices, valid_distances = self._dense_search_indices(index, query_embedding, k)
         search_time = time.time() - start_time
 
-        # When k > ntotal, FAISS's native search (not the MPS one, which already caps k
-        # at ntotal) fills the missing slots with index -1 and a "sentinel" distance.
-        # Discard those slots instead of letting -1 become Python negative indexing
-        # (metadata[-1]/index.reconstruct(-1)) and contaminate the distance statistics.
-        valid_mask = indices[0] >= 0
-        valid_distances = distances[0][valid_mask]
-
         results = []
-        for dist, idx in zip(distances[0][valid_mask], indices[0][valid_mask]):
+        for dist, idx in zip(valid_distances, valid_indices):
             # Reconstructs the vector from the FAISS index itself (instead of keeping a
             # separate embeddings array in memory) — works the same for "flat" and "ivf_*"
             # (index.make_direct_map() is called when building/loading the index).
@@ -839,6 +834,119 @@ class FaissDocumentIndex:
             "results": results,
             "avg_distance": float(np.mean(valid_distances)) if len(valid_distances) else 0.0,
             "std_distance": float(np.std(valid_distances)) if len(valid_distances) else 0.0
+        }
+
+    def _dense_search_indices(self, index: faiss.Index, query_embedding: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Runs a dense search (FAISS or MPS, whichever applies — see `_should_use_mps`)
+        for the `n` nearest neighbors of `query_embedding`.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (valid_indices, valid_distances) — parallel
+            arrays, already filtered of the -1 "sentinel" slots FAISS's native search
+            (not the MPS one, which already caps n at ntotal) fills in when n > ntotal.
+        """
+        if self._should_use_mps(index):
+            distances, indices = self._mps_flat_search(index, query_embedding, n)
+        else:
+            distances, indices = index.search(query_embedding.astype('float32'), n)
+        valid_mask = indices[0] >= 0
+        return indices[0][valid_mask], distances[0][valid_mask]
+
+    def _tokenize_for_bm25(self, text: str) -> List[str]:
+        """Tokenizes text for BM25 indexing/querying — same normalization (lowercase,
+        punctuation stripped, PT stopwords removed) already used for embedding queries."""
+        return clean_text(text)[0].split()
+
+    def _get_bm25_index(self, document_type: str, strategy: str) -> BM25Okapi:
+        """
+        Lazily builds (and caches on the instance) a BM25Okapi index over the metadata
+        already loaded for `document_type`/`strategy` — no separate on-disk format, no
+        LLM/embedding calls: just tokenizing text that's already in memory.
+        """
+        cached = self._bm25_indices.get(document_type, {}).get(strategy)
+        if cached is not None:
+            return cached
+
+        _, metadata, _embeddings = self.indices[document_type][strategy]
+        corpus = [self._tokenize_for_bm25(self._extract_metadata_text(m)) for m in metadata]
+        bm25 = BM25Okapi(corpus)
+
+        self._bm25_indices.setdefault(document_type, {})[strategy] = bm25
+        return bm25
+
+    def evaluate_strategy_hybrid(
+        self, query: str, document_type: str, strategy: str, k: int = 10,
+        candidate_pool: Optional[int] = None, rrf_k: int = 60
+    ) -> Dict:
+        """
+        Hybrid search: fuses dense (FAISS embeddings) and lexical (BM25) rankings via
+        Reciprocal Rank Fusion — helps with exact terms (names, case/process numbers)
+        that a purely dense search can miss, without needing to normalize/weigh two
+        incompatible score scales (L2 distance vs. BM25 score).
+
+        Parameters:
+            query (str): Query text.
+            document_type (str): Document type to select the corresponding index.
+            strategy (str): Strategy used for indexing and search.
+            k (int, optional): Number of fused results to return. Defaults to 10.
+            candidate_pool (Optional[int]): How many candidates each of the dense/BM25
+                searches contributes to the fusion before cutting to `k`. Defaults to
+                max(k * 4, 50), capped at the corpus size.
+            rrf_k (int): RRF's smoothing constant (higher = flatter weighting of rank
+                position). Defaults to 60, the commonly used value.
+
+        Returns:
+            Dict: Same overall shape as `evaluate_strategy`, with "results" entries
+            carrying "rrf_score" (used for ranking) plus "dense_rank"/"bm25_rank"
+            (whichever lists the document appeared in) instead of "distance"/
+            "similarity". Returns an empty dict if the document type/strategy doesn't
+            exist in the indices.
+        """
+        if document_type not in self.indices or strategy not in self.indices[document_type]:
+            return {}
+
+        index, metadata, _embeddings = self.indices[document_type][strategy]
+        pool = candidate_pool or max(k * 4, 50)
+        pool = min(pool, index.ntotal)
+
+        start_time = time.time()
+
+        query_embedding = self.get_embeddings([query])
+        dense_indices, _dense_distances = self._dense_search_indices(index, query_embedding, pool)
+
+        bm25 = self._get_bm25_index(document_type, strategy)
+        bm25_scores = bm25.get_scores(self._tokenize_for_bm25(query))
+        bm25_indices = np.argsort(bm25_scores)[::-1][:pool]
+
+        dense_ranks = {int(doc_idx): rank for rank, doc_idx in enumerate(dense_indices)}
+        bm25_ranks = {int(doc_idx): rank for rank, doc_idx in enumerate(bm25_indices)}
+
+        rrf_scores: Dict[int, float] = defaultdict(float)
+        for doc_idx, rank in dense_ranks.items():
+            rrf_scores[doc_idx] += 1.0 / (rrf_k + rank + 1)
+        for doc_idx, rank in bm25_ranks.items():
+            rrf_scores[doc_idx] += 1.0 / (rrf_k + rank + 1)
+
+        search_time = time.time() - start_time
+
+        ranked_doc_indices = sorted(rrf_scores, key=lambda doc_idx: rrf_scores[doc_idx], reverse=True)[:k]
+
+        results = []
+        for doc_idx in ranked_doc_indices:
+            results.append({
+                "rank": len(results) + 1,
+                "rrf_score": rrf_scores[doc_idx],
+                "doc_index": doc_idx,
+                "metadata": metadata[doc_idx],
+                "dense_rank": dense_ranks.get(doc_idx),
+                "bm25_rank": bm25_ranks.get(doc_idx),
+            })
+
+        return {
+            "strategy": strategy,
+            "search_time": search_time,
+            "results": results,
         }
 
 
@@ -1170,6 +1278,10 @@ class FaissDocumentIndex:
             if strategy in self.indices[document_type]:
                 # Removes the reference to the (index, metadata, embeddings) tuple
                 del self.indices[document_type][strategy]
+                # Stale otherwise: a future load_indices() for the same document_type/
+                # strategy could point at different metadata than what the BM25 index
+                # (see evaluate_strategy_hybrid) was built from.
+                self._bm25_indices.get(document_type, {}).pop(strategy, None)
                 logger.info(_("Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded.") % {"strategy": strategy, "document_type": document_type})
 
                 # If the strategies dict becomes empty, also remove the document_type
@@ -1183,6 +1295,7 @@ class FaissDocumentIndex:
         else:
             # Removes the reference to the whole strategies dict
             del self.indices[document_type]
+            self._bm25_indices.pop(document_type, None)
             logger.info(_("Success: All indices for '%(document_type)s' have been unloaded.") % {"document_type": document_type})
 
         gc.collect()
@@ -1228,6 +1341,9 @@ class FaissDocumentIndex:
 
             # Updates the tuple in the indices structure (embeddings kept as-is)
             self.indices[document_type][strategy] = (index, metadata, embeddings)
+            # Invalidates the cached BM25 index (see evaluate_strategy_hybrid) — it was
+            # built from `metadata` before these documents were appended to it.
+            self._bm25_indices.get(document_type, {}).pop(strategy, None)
 
             logger.info(_("New documents added to strategy '%(strategy)s' for '%(document_type)s'. Total now: %(ntotal)s vectors.") % {"strategy": strategy, "document_type": document_type, "ntotal": index.ntotal})
 
@@ -1252,6 +1368,7 @@ class FaissDocumentIndex:
 
         # Removes the reference to the whole indices dict
         self.indices.clear()
+        self._bm25_indices.clear()
 
         # Calls the garbage collector to free memory as quickly as possible
         gc.collect()

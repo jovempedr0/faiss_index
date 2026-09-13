@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv",
     "scikit-learn",
     "psutil",
+    "rank-bm25",
 ]
 
 [project.optional-dependencies]
