@@ -10,6 +10,7 @@ import openai
 import logging
 import psutil
 
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from sklearn.metrics.pairwise import cosine_similarity
@@ -560,43 +561,6 @@ class FaissDocumentIndex:
         except Exception as e:
             logger.warning(_("Failed to load section schema from '%(path)s': %(error)s") % {"path": path, "error": e})
 
-    def _retrieve_docs_by_document_type(self, document_type: str) -> List[Tuple[str, str]]:
-        """
-        Retrieves documents of a specific document type from the base directory.
-
-        Parameters:
-            document_type (str): The document type whose documents will be retrieved.
-
-        Returns:
-            List[Tuple[str, str]]: A list of tuples, each containing the file path and
-                the document's content.
-        """
-        base_dir = os.path.join(self.base_path, document_type)
-        docs = []
-
-        def _get_valid_files(folder_path: str) -> List[str]:
-            return [
-                os.path.join(folder_path, file)
-                for file in os.listdir(folder_path)
-                if file.endswith(self.SUPPORTED_FILE_EXTENSIONS)
-            ]
-
-        for folder in os.listdir(base_dir):
-            folder_path = os.path.join(base_dir, folder)
-            if not os.path.isdir(folder_path):
-                continue
-            valid_files = _get_valid_files(folder_path)
-            for file_path in valid_files:
-                try:
-                    content = self.read_document(file_path)
-                    if content and content.strip():
-                        docs.append((file_path, content))
-                except Exception as e:
-                    print(_("Error reading %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
-
-        return docs
-
-
     MIN_TRAINING_POINTS_PER_CLUSTER = constants.MIN_TRAINING_POINTS_PER_CLUSTER
 
     def _select_index_kind(self, n: int) -> str:
@@ -720,10 +684,10 @@ class FaissDocumentIndex:
             tuple: A tuple with the FAISS index, the metadata, and the embeddings.
         """
         if embeddings.shape[0] == 0:
-            print(_("No embeddings generated for strategy '%(strategy_name)s'. Skipping.") % {"strategy_name": strategy_name})
+            logger.warning(_("No embeddings generated for strategy '%(strategy_name)s'. Skipping.") % {"strategy_name": strategy_name})
             return None, [], None
 
-        print(_("Building and saving index for strategy: '%(strategy_name)s'...") % {"strategy_name": strategy_name})
+        logger.info(_("Building and saving index for strategy: '%(strategy_name)s'...") % {"strategy_name": strategy_name})
         index = self._build_faiss_index(embeddings)
 
         faiss.write_index(index, str(output_dir / f"{document_type}_{strategy_name}.index"))
@@ -731,7 +695,7 @@ class FaissDocumentIndex:
             json.dump(metadata, f, ensure_ascii=False, indent=4)
         np.save(output_dir / f"{document_type}_{strategy_name}_embeddings.npy", embeddings)
 
-        print(_("Index for '%(strategy_name)s' saved successfully.") % {"strategy_name": strategy_name})
+        logger.info(_("Index for '%(strategy_name)s' saved successfully.") % {"strategy_name": strategy_name})
         return index, metadata, embeddings
 
 
@@ -762,7 +726,7 @@ class FaissDocumentIndex:
         file_paths = sorted(p for p in base_dir.rglob('*') if p.suffix in self.SUPPORTED_FILE_EXTENSIONS)
 
         if doc_limit is not None and doc_limit > 0:
-            print(_("Found %(total)s matching file(s). Limit of %(doc_limit)s applied.") % {"total": len(file_paths), "doc_limit": doc_limit})
+            logger.info(_("Found %(total)s matching file(s). Limit of %(doc_limit)s applied.") % {"total": len(file_paths), "doc_limit": doc_limit})
             file_paths = file_paths[:doc_limit]
 
         docs = []
@@ -772,13 +736,13 @@ class FaissDocumentIndex:
                 if content and content.strip():
                     docs.append((str(file_path), content))
             except Exception as e:
-                print(_("Error reading %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
+                logger.error(_("Error reading %(file_path)s: %(error)s") % {"file_path": file_path, "error": e}, exc_info=True)
 
         if not docs:
-            print(_("No documents found for document type: %(document_type)s") % {"document_type": document_type})
+            logger.warning(_("No documents found for document type: %(document_type)s") % {"document_type": document_type})
             return
 
-        print(_("Processing %(count)s documents of %(document_type)s...") % {"count": len(docs), "document_type": document_type})
+        logger.info(_("Processing %(count)s documents of %(document_type)s...") % {"count": len(docs), "document_type": document_type})
 
         if document_type not in self.section_schemas:
             self._load_section_schema(document_type, output_dir)
@@ -794,7 +758,7 @@ class FaissDocumentIndex:
         if self.section_schemas.get(document_type):
             embeddings_map["sections"] = self.create_embeddings_sections(docs, document_type)
         else:
-            print(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
+            logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
 
         self.indices[document_type] = {}
 
@@ -803,7 +767,7 @@ class FaissDocumentIndex:
             result = self._create_and_save_index(strategy, embeddings, meta, document_type, output_dir)
             self.indices[document_type][strategy] = result
 
-        print(_("\nIndex construction for '%(document_type)s' complete.") % {"document_type": document_type})
+        logger.info(_("Index construction for '%(document_type)s' complete.") % {"document_type": document_type})
 
 
     def evaluate_strategy(self, query: str, document_type: str, strategy: str, k: int = 10) -> Dict:
@@ -917,7 +881,7 @@ class FaissDocumentIndex:
             Dict: A dictionary with the mean score and standard deviation for each strategy,
                 considering the defined criteria.
         """
-        scores = {"full": [], "sections": [], "chunks": []}
+        scores: Dict[str, List[float]] = defaultdict(list)
 
         for query, strategies in comparison_results.items():
             for strategy, results in strategies.items():
@@ -985,13 +949,13 @@ class FaissDocumentIndex:
         return final_score
 
 
-    def generate_search(self, received_query:list[str], keywords:str, document_type:str, strategies_compare:list[str]) -> Tuple[List, Dict]:
+    def generate_search(self, received_query:list[str], keywords:List[str], document_type:str, strategies_compare:list[str]) -> Tuple[List, Dict]:
         """
         Runs a search based on a received query, keywords, and document type.
 
         Parameters:
             received_query (list[str]): List containing the received query.
-            keywords (str): Keywords to help the search.
+            keywords (List[str]): Keywords to help the search.
             document_type (str): Document type to steer the search strategy.
             strategies_compare (list[str]): Strategies to compare (e.g.: ["full", "chunks"]).
 
@@ -1022,16 +986,16 @@ class FaissDocumentIndex:
         is_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
 
         if is_loaded:
-            print(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
+            logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
         else:
-            print(_("Index for '%(document_type)s/%(strategy)s' not found. Loading now...") % {"document_type": document_type, "strategy": strategy})
+            logger.info(_("Index for '%(document_type)s/%(strategy)s' not found. Loading now...") % {"document_type": document_type, "strategy": strategy})
 
             self.load_indices(path_indices=config.DEFAULT_PATH_INDICES,
                             document_types=[document_type],
                             strategies=[strategy])
 
             is_now_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
-            print(_("Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search...") % {"document_type": document_type, "strategy": strategy, "is_now_loaded": is_now_loaded})
+            logger.info(_("Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search...") % {"document_type": document_type, "strategy": strategy, "is_now_loaded": is_now_loaded})
 
         cleaned_query_list = clean_text(received_query)
         if not cleaned_query_list:
@@ -1192,7 +1156,7 @@ class FaissDocumentIndex:
             None
         """
         if document_type not in self.indices:
-            print(_("Info: No index loaded for document type '%(document_type)s'.") % {"document_type": document_type})
+            logger.info(_("Info: No index loaded for document type '%(document_type)s'.") % {"document_type": document_type})
             return
 
         # Case 1: Deallocate a specific strategy
@@ -1200,20 +1164,20 @@ class FaissDocumentIndex:
             if strategy in self.indices[document_type]:
                 # Removes the reference to the (index, metadata, embeddings) tuple
                 del self.indices[document_type][strategy]
-                print(_("Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded.") % {"strategy": strategy, "document_type": document_type})
+                logger.info(_("Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded.") % {"strategy": strategy, "document_type": document_type})
 
                 # If the strategies dict becomes empty, also remove the document_type
                 if not self.indices[document_type]:
                     del self.indices[document_type]
-                    print(_("Info: No other strategy remains, removing entry for '%(document_type)s'.") % {"document_type": document_type})
+                    logger.info(_("Info: No other strategy remains, removing entry for '%(document_type)s'.") % {"document_type": document_type})
             else:
-                print(_("Warning: Strategy '%(strategy)s' not found for '%(document_type)s'.") % {"strategy": strategy, "document_type": document_type})
+                logger.warning(_("Warning: Strategy '%(strategy)s' not found for '%(document_type)s'.") % {"strategy": strategy, "document_type": document_type})
 
         # Case 2: Deallocate all strategies for the document_type
         else:
             # Removes the reference to the whole strategies dict
             del self.indices[document_type]
-            print(_(" Success: All indices for '%(document_type)s' have been unloaded.") % {"document_type": document_type})
+            logger.info(_("Success: All indices for '%(document_type)s' have been unloaded.") % {"document_type": document_type})
 
         gc.collect()
 
@@ -1234,14 +1198,8 @@ class FaissDocumentIndex:
         if document_type not in self.indices:
             raise ValueError(f"Index for document type '{document_type}' not found. Load the index before adding documents.")
 
-        for strategy in ["full", "sections", "chunks"]:
-            if strategy not in self.indices[document_type]:
-                # Strategy not built for this document_type (e.g.: "sections" without a calibrated schema).
-                continue
-
-            print(_("Adding new documents to strategy '%(strategy)s' for '%(document_type)s'...") % {"strategy": strategy, "document_type": document_type})
-
-            index, metadata, embeddings = self.indices[document_type][strategy]
+        for strategy, (index, metadata, embeddings) in self.indices[document_type].items():
+            logger.info(_("Adding new documents to strategy '%(strategy)s' for '%(document_type)s'...") % {"strategy": strategy, "document_type": document_type})
 
             if strategy == "full":
                 new_embeddings, new_metadata = self.create_embeddings_full(new_docs)
@@ -1265,7 +1223,7 @@ class FaissDocumentIndex:
             # Updates the tuple in the indices structure (embeddings kept as-is)
             self.indices[document_type][strategy] = (index, metadata, embeddings)
 
-            print(_("New documents added to strategy '%(strategy)s' for '%(document_type)s'. Total now: %(ntotal)s vectors.") % {"strategy": strategy, "document_type": document_type, "ntotal": index.ntotal})
+            logger.info(_("New documents added to strategy '%(strategy)s' for '%(document_type)s'. Total now: %(ntotal)s vectors.") % {"strategy": strategy, "document_type": document_type, "ntotal": index.ntotal})
 
 
     def unload_all_indices(self) -> None:
@@ -1280,11 +1238,11 @@ class FaissDocumentIndex:
             None
         """
         if not self.indices:
-            print(_("Info: No index is currently loaded."))
+            logger.info(_("Info: No index is currently loaded."))
             return
 
         num_document_types = len(self.indices)
-        print(_("Info: %(num_document_types)s document type(s) found. Unloading all indices...") % {"num_document_types": num_document_types})
+        logger.info(_("Info: %(num_document_types)s document type(s) found. Unloading all indices...") % {"num_document_types": num_document_types})
 
         # Removes the reference to the whole indices dict
         self.indices.clear()
@@ -1292,4 +1250,4 @@ class FaissDocumentIndex:
         # Calls the garbage collector to free memory as quickly as possible
         gc.collect()
 
-        print(_("Success: All indices have been unloaded and memory has been freed."))
+        logger.info(_("Success: All indices have been unloaded and memory has been freed."))

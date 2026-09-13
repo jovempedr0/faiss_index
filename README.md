@@ -103,6 +103,15 @@ working normally.
 
 ## Quickstart
 
+All progress/status messages go through Python's standard `logging` (module-level
+`logger`, one per file) — nothing is printed to stdout on its own. Configure a handler
+before using the library if you want to see them:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
+
 ```python
 from faiss_index import FaissDocumentIndex
 
@@ -219,7 +228,7 @@ best_strategy = max(scores, key=lambda s: scores[s]["mean_score"])
 ```python
 results, scores = idx.generate_search(
     received_query=["termination clause"],
-    keywords=["termination", "penalty"],  # despite the type hint, it's treated as a list of words
+    keywords=["termination", "penalty"],
     document_type="contract",
     strategies_compare=["full", "chunks"],
 )
