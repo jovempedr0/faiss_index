@@ -13,11 +13,11 @@ def test_get_embeddings_same_text_gives_same_vector(make_index):
     assert np.array_equal(result[0], result[1])
 
 
-def test_get_embeddings_batches_according_to_batch_size(make_index, fake_openai_client):
+def test_get_embeddings_batches_according_to_batch_size(make_index, fake_embedding_provider):
     idx = make_index(embedding_dim=4, embedding_batch_size=2)
     idx.get_embeddings(["a", "b", "c", "d", "e"])
     # 5 texts, batch size 2 -> batches of [2, 2, 1]
-    assert fake_openai_client.embedding_calls == [2, 2, 1]
+    assert fake_embedding_provider.embedding_calls == [2, 2, 1]
 
 
 def test_get_embeddings_strips_null_bytes(make_index):

@@ -29,38 +29,32 @@ MAX_SECTION_SAMPLE_CHARS = 4000
 # Min number of training points per cluster when sizing nlist in IVFFlat/IVFPQ.
 MIN_TRAINING_POINTS_PER_CLUSTER = 30
 
-# Structured response format (JSON Schema) used in the OpenAI chat call that infers the
-# section schema of a document type (`_infer_section_schema_via_llm`).
-SECTION_SCHEMA_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "document_section_schema",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "sections": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Short, descriptive section name, in snake_case."
-                            },
-                            "patterns": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Short words or phrases, in the document's language, that usually mark the start of the section."
-                            }
-                        },
-                        "required": ["name", "patterns"],
-                        "additionalProperties": False
+# JSON Schema (provider-agnostic — no OpenAI-specific envelope) describing the
+# structured output requested in the chat call that infers the section schema of a
+# document type (`_infer_section_schema_via_llm`, via `ChatProvider.complete_structured`).
+SECTION_SCHEMA_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short, descriptive section name, in snake_case."
+                    },
+                    "patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Short words or phrases, in the document's language, that usually mark the start of the section."
                     }
-                }
-            },
-            "required": ["sections"],
-            "additionalProperties": False
+                },
+                "required": ["name", "patterns"],
+                "additionalProperties": False
+            }
         }
-    }
+    },
+    "required": ["sections"],
+    "additionalProperties": False
 }

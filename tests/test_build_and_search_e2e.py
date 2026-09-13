@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_build_load_and_search_roundtrip(make_index, fake_openai_client, tmp_path):
+def test_build_load_and_search_roundtrip(make_index, fake_chat_provider, tmp_path):
     document_type = "doctype"
     data_dir = tmp_path / "data"
     output_dir = tmp_path / "out"
@@ -15,7 +15,7 @@ def test_build_load_and_search_roundtrip(make_index, fake_openai_client, tmp_pat
     )
 
     idx = make_index(embedding_dim=8)
-    fake_openai_client.queue_chat_response(
+    fake_chat_provider.responses.append(
         {"sections": [{"name": "corpo", "patterns": ["corpo do documento"]}]}
     )
 

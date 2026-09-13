@@ -1,6 +1,5 @@
 import os
 import re
-import base64
 import logging
 import pdfplumber
 import tempfile
@@ -11,7 +10,6 @@ from pathlib import Path
 
 from typing import Any
 
-import openai
 from PIL import ImageEnhance
 from pdf2image import convert_from_path
 from subprocess import run, CalledProcessError
@@ -19,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import config
 from i18n import _
+from providers import VisionProvider, OpenAICompatibleChatProvider
 
 warnings.filterwarnings("ignore")
 
@@ -28,20 +27,25 @@ logger = logging.getLogger(__name__)
 # as "<|det|>type [x1, y1, x2, y2]<|/det|>text", mixed with free-form preamble text.
 _VLM_DETECTION_TAG_RE = re.compile(r'<\|det\|>.*?<\|/det\|>([^<]*)')
 
-_vlm_client = None
+_vlm_provider: VisionProvider = None
 
 
-def _get_vlm_client() -> openai.OpenAI:
+def set_vlm_provider(provider: VisionProvider) -> None:
     """
-    Lazily builds (and caches) the OpenAI-compatible client used for VLM-based OCR
-    (see `config.OCR_VLM_MODEL`). Reads OPENAI_API_KEY/OPENAI_BASE_URL from the
-    environment — the OpenAI SDK's own convention — independent of the `openai_key`
-    passed to `FaissDocumentIndex`, since this module has no instance to hold one.
+    Overrides the VisionProvider used for VLM-based OCR (see `config.OCR_VLM_MODEL`).
+    Only needed to plug in a backend that isn't OpenAI-compatible — by default, a
+    `providers.OpenAICompatibleChatProvider` is built lazily from `config.OCR_VLM_MODEL`
+    (and OPENAI_API_KEY/OPENAI_BASE_URL from the environment).
     """
-    global _vlm_client
-    if _vlm_client is None:
-        _vlm_client = openai.OpenAI()
-    return _vlm_client
+    global _vlm_provider
+    _vlm_provider = provider
+
+
+def _get_vlm_provider() -> VisionProvider:
+    global _vlm_provider
+    if _vlm_provider is None:
+        _vlm_provider = OpenAICompatibleChatProvider(model=config.OCR_VLM_MODEL, vision_model=config.OCR_VLM_MODEL)
+    return _vlm_provider
 
 
 def convert_any_to_pdf(file_path, output_dir=None):
@@ -288,27 +292,17 @@ def _extract_text_from_vlm_response(content: str) -> str:
 
 def _ocr_via_vlm(img) -> str:
     """
-    Runs OCR on a single image via a vision-capable chat model (`config.OCR_VLM_MODEL`),
-    through the OpenAI-compatible chat completions API — lets image OCR run against a
-    local server (LM Studio, oMLX, vLLM, etc.) serving an OCR-purpose VLM, instead of
-    pytesseract.
+    Runs OCR on a single image via a vision-capable chat model (`config.OCR_VLM_MODEL`,
+    through the VisionProvider set with `set_vlm_provider` or, by default, an
+    OpenAI-compatible one) — lets image OCR run against a local server (LM Studio,
+    oMLX, vLLM, etc.) serving an OCR-purpose VLM, instead of pytesseract.
     """
     buffer = BytesIO()
     img.save(buffer, format="PNG")
-    b64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    client = _get_vlm_client()
-    response = client.chat.completions.create(
-        model=config.OCR_VLM_MODEL,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Extract all text from this image, verbatim."},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
-            ],
-        }],
-    )
-    return _extract_text_from_vlm_response(response.choices[0].message.content)
+    provider = _get_vlm_provider()
+    raw_text = provider.describe_image(buffer.getvalue(), "Extract all text from this image, verbatim.")
+    return _extract_text_from_vlm_response(raw_text)
 
 
 def process_image(img, lang='por'):

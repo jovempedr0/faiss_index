@@ -6,7 +6,6 @@ import faiss
 import json
 import nltk
 import time
-import openai
 import logging
 import psutil
 
@@ -19,6 +18,7 @@ from utils_ocr import extract_text_from_file_ocr_fallback
 import config
 import constants
 from i18n import _
+from providers import EmbeddingProvider, ChatProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
 
 try:
     # Optional dependency: only used to accelerate search on "flat" indices via
@@ -81,6 +81,8 @@ class FaissDocumentIndex:
                  embedding_model: str = config.DEFAULT_EMBEDDING_MODEL,
                  embedding_dim: Optional[int] = None,
                  section_extraction_model: str = config.DEFAULT_SECTION_EXTRACTION_MODEL,
+                 embedding_provider: Optional[EmbeddingProvider] = None,
+                 chat_provider: Optional[ChatProvider] = None,
                  embedding_batch_size: int = config.DEFAULT_EMBEDDING_BATCH_SIZE,
                  num_threads: Optional[int] = None,
                  index_type: str = config.DEFAULT_INDEX_TYPE,
@@ -119,6 +121,18 @@ class FaissDocumentIndex:
                 looked up automatically.
             section_extraction_model (str): OpenAI chat model used to calibrate the
                 section schema per document type. Defaults to "gpt-4o-mini".
+            embedding_provider (Optional[EmbeddingProvider]): Custom embeddings backend
+                (see `providers.py`). If None (the default), an
+                `OpenAICompatibleEmbeddingProvider` is built from `embedding_model`/
+                `embedding_dim`/`openai_key` — the OpenAI-compatible path described above.
+                Pass your own object (any type with a `.dimension` attribute and an
+                `.embed(texts) -> List[List[float]]` method) to use a backend that
+                doesn't speak the OpenAI protocol at all.
+            chat_provider (Optional[ChatProvider]): Custom chat backend used to calibrate
+                section schemas (see `providers.py`). If None (the default), an
+                `OpenAICompatibleChatProvider` is built from `section_extraction_model`/
+                `openai_key`. Pass your own object (any type with a
+                `.complete_structured(prompt, json_schema) -> dict` method) otherwise.
             embedding_batch_size (int): How many texts are sent per call to the
                 embeddings API. Defaults to 100.
             num_threads (Optional[int]): Number of threads FAISS should use for search.
@@ -170,24 +184,21 @@ class FaissDocumentIndex:
 
         if not openai_key:
             openai_key = os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            raise ValueError("OPENAI_API_KEY not found. Set it in .env or pass it as a parameter")
-        # Instance-level client (instead of mutating openai.api_key globally) — avoids two
-        # instances with different keys, or concurrent threads, stepping on each other.
-        self.client = openai.OpenAI(api_key=openai_key)
+        if not embedding_provider or not chat_provider:
+            # Only the OpenAI-compatible default path needs a key — a fully custom
+            # embedding_provider + chat_provider pair doesn't touch OPENAI_API_KEY at all.
+            if not openai_key:
+                raise ValueError("OPENAI_API_KEY not found. Set it in .env or pass it as a parameter")
 
-        if embedding_dim is not None:
-            self.embedding_dim = embedding_dim
-        elif embedding_model in constants.EMBEDDING_DIMENSIONS:
-            self.embedding_dim = constants.EMBEDDING_DIMENSIONS[embedding_model]
-        else:
-            raise ValueError(
-                f"Unknown embedding dimension for model '{embedding_model}'. "
-                "Pass embedding_dim explicitly for models outside constants.EMBEDDING_DIMENSIONS "
-                "(e.g., a local/non-OpenAI embedding model)."
-            )
+        self.embedding_provider = embedding_provider or OpenAICompatibleEmbeddingProvider(
+            model=embedding_model, api_key=openai_key, dimension=embedding_dim
+        )
+        self.chat_provider = chat_provider or OpenAICompatibleChatProvider(
+            model=section_extraction_model, api_key=openai_key
+        )
+        self.embedding_dim = self.embedding_provider.dimension
 
-        logger.info(_("Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s") % {"model": embedding_model, "dim": self.embedding_dim})
+        logger.info(_("Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s") % {"model": getattr(self.embedding_provider, "model", embedding_model), "dim": self.embedding_dim})
 
 
     def is_index_loaded(self, document_types: list[str], strategies: list[str], require_gpu: bool) -> bool:
@@ -280,9 +291,9 @@ class FaissDocumentIndex:
             batch_inputs = [cleaned_texts[i] for i in batch_indices_with_text]
 
             if batch_inputs:
-                response = self.client.embeddings.create(input=batch_inputs, model=self.embedding_model)
-                for data in response.data:
-                    embeddings[batch_indices_with_text[data.index]] = data.embedding
+                batch_embeddings = self.embedding_provider.embed(batch_inputs)
+                for i, embedding in zip(batch_indices_with_text, batch_embeddings):
+                    embeddings[i] = embedding
 
             for i in batch_indices:
                 if embeddings[i] is None:
@@ -517,12 +528,7 @@ class FaissDocumentIndex:
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.section_extraction_model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format=constants.SECTION_SCHEMA_RESPONSE_FORMAT,
-            )
-            parsed = json.loads(response.choices[0].message.content)
+            parsed = self.chat_provider.complete_structured(prompt, constants.SECTION_SCHEMA_JSON_SCHEMA)
         except Exception as e:
             logger.error(_("Failed to calibrate section schema via LLM for '%(document_type)s': %(error)s") % {"document_type": document_type, "error": e}, exc_info=True)
             return {}

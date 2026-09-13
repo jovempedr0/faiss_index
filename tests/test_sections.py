@@ -32,9 +32,9 @@ def test_extract_sections_without_calibrated_schema_raises(make_index):
         idx.extract_sections("qualquer texto", "tipo_nao_calibrado")
 
 
-def test_register_document_type_parses_llm_schema(make_index, fake_openai_client):
-    idx = make_index(section_extraction_model="fake-chat-model")
-    fake_openai_client.queue_chat_response({
+def test_register_document_type_parses_llm_schema(make_index, fake_chat_provider):
+    idx = make_index()
+    fake_chat_provider.responses.append({
         "sections": [
             {"name": "Header Info", "patterns": [" ABC ", "xyz"]},
             {"name": "conclusion", "patterns": ["decido"]},
@@ -50,9 +50,9 @@ def test_register_document_type_parses_llm_schema(make_index, fake_openai_client
     assert idx.section_schemas["contrato"] == schema
 
 
-def test_register_document_type_empty_llm_response_yields_empty_schema(make_index, fake_openai_client):
+def test_register_document_type_empty_llm_response_yields_empty_schema(make_index, fake_chat_provider):
     idx = make_index()
-    fake_openai_client.queue_chat_response({"sections": []})
+    fake_chat_provider.responses.append({"sections": []})
 
     schema = idx.register_document_type("misto", sample_texts=["amostra heterogenea"])
 
@@ -60,20 +60,20 @@ def test_register_document_type_empty_llm_response_yields_empty_schema(make_inde
     assert idx.section_schemas["misto"] == {}
 
 
-def test_register_document_type_uses_cache_without_recalibrating(make_index, fake_openai_client):
+def test_register_document_type_uses_cache_without_recalibrating(make_index, fake_chat_provider):
     idx = make_index()
     idx.section_schemas["contrato"] = {"header": ["cabecalho"]}
 
     schema = idx.register_document_type("contrato", sample_texts=["nao deveria ser usado"])
 
     assert schema == {"header": ["cabecalho"]}
-    assert fake_openai_client.chat_responses == []  # no chat call was made
+    assert fake_chat_provider.responses == []  # no chat call was made
 
 
-def test_register_document_type_force_recalibrate_ignores_cache(make_index, fake_openai_client):
+def test_register_document_type_force_recalibrate_ignores_cache(make_index, fake_chat_provider):
     idx = make_index()
     idx.section_schemas["contrato"] = {"header": ["antigo"]}
-    fake_openai_client.queue_chat_response({"sections": [{"name": "novo", "patterns": ["padrao"]}]})
+    fake_chat_provider.responses.append({"sections": [{"name": "novo", "patterns": ["padrao"]}]})
 
     schema = idx.register_document_type(
         "contrato", sample_texts=["amostra"], force_recalibrate=True

@@ -22,6 +22,7 @@ nothing is fixed on the class.
 - [On-disk file layout](#on-disk-file-layout)
 - [Performance configuration](#performance-configuration)
 - [Models used](#models-used)
+- [Plugging in a custom provider](#plugging-in-a-custom-provider)
 - [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules)
 - [Log language](#log-language)
 
@@ -429,6 +430,47 @@ constructor:
   Defaults to `gpt-4o-mini` — since it's a one-off, small, structured task (not
   the actual search or generation path), a lighter chat model is enough; there's
   no need for a larger model here.
+
+## Plugging in a custom provider
+
+`openai_key`/`embedding_model`/`section_extraction_model` are the quick path: under
+the hood they build an OpenAI-compatible provider (`providers.py`), which works against
+the real OpenAI API or any local server that speaks its wire protocol (LM Studio, oMLX,
+vLLM, etc. — point `OPENAI_BASE_URL`, or pass `base_url` directly to the provider
+classes below, at whichever backend serves your models).
+
+For a backend that doesn't speak the OpenAI protocol at all, pass your own
+`embedding_provider`/`chat_provider` instead — `FaissDocumentIndex` only depends on the
+small Protocols in `providers.py`, not on any specific SDK:
+
+```python
+from typing import List
+from providers import EmbeddingProvider  # structural — no need to subclass it
+
+class MyEmbeddingProvider:
+    dimension = 768
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        return my_own_client.embed_documents(texts)
+
+idx = FaissDocumentIndex(
+    base_path="./data",
+    embedding_provider=MyEmbeddingProvider(),
+    chat_provider=my_chat_provider,  # implements .complete_structured(prompt, json_schema) -> dict
+)
+```
+
+`chat_provider` needs `complete_structured(prompt: str, json_schema: dict) -> dict` —
+called once per `document_type` to calibrate its section schema (see
+[LLM-calibrated section schema](#llm-calibrated-section-schema)); how it gets structured
+JSON back from the underlying model (native structured output, prompt engineering,
+forced tool-calling, etc.) is entirely up to the provider.
+
+The OCR fallback's VLM path (`FAISS_INDEX_OCR_VLM_MODEL`, see
+[Required setup](#required-setup)) has the same escape hatch: call
+`utils_ocr.set_vlm_provider(provider)` with any object implementing
+`describe_image(image_png_bytes: bytes, prompt: str) -> str` to use a non-OpenAI-compatible
+vision backend.
 
 ## The `config.py` and `constants.py` modules
 

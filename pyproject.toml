@@ -25,7 +25,7 @@ ocr = ["pdfplumber", "pytesseract", "pdf2image", "Pillow"]
 dev = ["pytest"]
 
 [tool.setuptools]
-py-modules = ["faiss_index", "config", "constants", "utils_ocr", "i18n"]
+py-modules = ["faiss_index", "config", "constants", "utils_ocr", "i18n", "providers"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
