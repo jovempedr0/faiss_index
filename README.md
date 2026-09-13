@@ -456,7 +456,7 @@ small Protocols in `providers.py`, not on any specific SDK:
 
 ```python
 from typing import List
-from providers import EmbeddingProvider  # structural — no need to subclass it
+from faiss_index.providers import EmbeddingProvider  # structural — no need to subclass it
 
 class MyEmbeddingProvider:
     dimension = 768
@@ -479,17 +479,18 @@ forced tool-calling, etc.) is entirely up to the provider.
 
 The OCR fallback's VLM path (`FAISS_INDEX_OCR_VLM_MODEL`, see
 [Required setup](#required-setup)) has the same escape hatch: call
-`utils_ocr.set_vlm_provider(provider)` with any object implementing
+`faiss_index.utils_ocr.set_vlm_provider(provider)` with any object implementing
 `describe_image(image_png_bytes: bytes, prompt: str) -> str` to use a non-OpenAI-compatible
 vision backend.
 
 ## The `config.py` and `constants.py` modules
 
-`utils_ocr.py` lives alongside `faiss_index.py` in this same directory and is
-imported as a sibling module (`from utils_ocr import ...`) — there's no more
-dependency on an external `src.utils` package. For the same reason, two other
-sibling modules hold what used to be scattered (or hardcoded) inside
-`faiss_index.py`:
+The package (`src/faiss_index/`) is a regular, self-contained Python package —
+`core.py` (the `FaissDocumentIndex` class), `utils_ocr.py`, `providers.py`,
+`config.py`, `constants.py`, and `i18n.py` all live together and import each other as
+relative submodules, with no dependency on an external `src.utils` package or any
+assumption about the host project's directory structure. `config.py`/`constants.py`
+hold what used to be scattered (or hardcoded) inside the main class:
 
 - **`constants.py`** — fixed protocol/algorithm values that don't vary by
   environment: supported file extensions, embedding dimension per model, the JSON
@@ -526,10 +527,10 @@ sibling modules hold what used to be scattered (or hardcoded) inside
 
 ## Log language
 
-All `logger.*`/`print()` messages in `faiss_index.py`, `config.py`, and
-`utils_ocr.py` go through `i18n.py`, which uses Python's standard `gettext`. The
-text in the source code is in English (that's gettext's `msgid`);
-`locale/pt/LC_MESSAGES/` carries the Portuguese translation.
+All `logger.*`/`print()` messages in `core.py`, `config.py`, and `utils_ocr.py` go
+through `i18n.py`, which uses Python's standard `gettext`. The text in the source code
+is in English (that's gettext's `msgid`); `src/faiss_index/locale/pt/LC_MESSAGES/`
+carries the Portuguese translation.
 
 The language is detected from the machine's locale — environment variables
 `LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, in that priority order (that's how
@@ -544,9 +545,9 @@ default behavior when there's no translation: it returns the `msgid` as-is).
 
 ### Adding a new language
 
-1. Generate a `.po` from the template: `msginit --locale=es --input=locale/faiss_index.pot --output-file=locale/es/LC_MESSAGES/faiss_index.po` (creates the `locale/es/LC_MESSAGES/` directory if needed).
-2. Translate the `msgstr` entries in `locale/es/LC_MESSAGES/faiss_index.po`.
-3. Compile to `.mo`: `msgfmt locale/es/LC_MESSAGES/faiss_index.po -o locale/es/LC_MESSAGES/faiss_index.mo`.
+1. Generate a `.po` from the template: `msginit --locale=es --input=src/faiss_index/locale/faiss_index.pot --output-file=src/faiss_index/locale/es/LC_MESSAGES/faiss_index.po` (creates the `es/LC_MESSAGES/` directory if needed).
+2. Translate the `msgstr` entries in `src/faiss_index/locale/es/LC_MESSAGES/faiss_index.po`.
+3. Compile to `.mo`: `msgfmt src/faiss_index/locale/es/LC_MESSAGES/faiss_index.po -o src/faiss_index/locale/es/LC_MESSAGES/faiss_index.mo`.
 
 `msginit`/`msgfmt` are part of the `gettext` package (e.g.: `brew install gettext`
 on macOS, `apt install gettext` on Linux) — they're only needed to

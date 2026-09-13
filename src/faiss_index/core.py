@@ -13,12 +13,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from sklearn.metrics.pairwise import cosine_similarity
-from utils_ocr import extract_text_from_file_ocr_fallback
+from .utils_ocr import extract_text_from_file_ocr_fallback
 
-import config
-import constants
-from i18n import _
-from providers import EmbeddingProvider, ChatProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
+from . import config
+from . import constants
+from .i18n import _
+from .providers import EmbeddingProvider, ChatProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
 
 try:
     # Optional dependency: only used to accelerate search on "flat" indices via

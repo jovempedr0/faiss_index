@@ -15,9 +15,9 @@ from pdf2image import convert_from_path
 from subprocess import run, CalledProcessError
 from concurrent.futures import ThreadPoolExecutor
 
-import config
-from i18n import _
-from providers import VisionProvider, OpenAICompatibleChatProvider
+from . import config
+from .i18n import _
+from .providers import VisionProvider, OpenAICompatibleChatProvider
 
 warnings.filterwarnings("ignore")
 

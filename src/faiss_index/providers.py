@@ -12,8 +12,8 @@ from typing import List, Optional, Protocol
 
 import openai
 
-import constants
-from i18n import _
+from . import constants
+from .i18n import _
 
 
 class EmbeddingProvider(Protocol):

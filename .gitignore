@@ -8,10 +8,11 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
 
 # OS
 .DS_Store
 
 # Local test fixtures (real documents) and generated indices — kept on disk, not versioned
-test/casos/
-test/faiss_index_output/
+fixtures/casos/
+fixtures/faiss_index_output/

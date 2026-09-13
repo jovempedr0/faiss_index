@@ -11,8 +11,8 @@ import logging
 import nltk
 from dotenv import load_dotenv
 
-from constants import STOPWORDS_LANGUAGE
-from i18n import _
+from .constants import STOPWORDS_LANGUAGE
+from .i18n import _
 
 logger = logging.getLogger(__name__)
 

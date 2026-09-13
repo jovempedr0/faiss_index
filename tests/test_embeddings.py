@@ -40,7 +40,7 @@ def test_get_embeddings_empty_text_becomes_zero_vector(make_index):
 
 def test_get_embeddings_truncates_long_input(make_index):
     idx = make_index(embedding_dim=4)
-    import constants
+    from faiss_index import constants
 
     short = "x" * constants.MAX_EMBEDDING_INPUT_CHARS
     long = short + "extra que deveria ser cortado"

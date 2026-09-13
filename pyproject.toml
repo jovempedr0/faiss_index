@@ -24,8 +24,11 @@ mps = ["torch"]
 ocr = ["pdfplumber", "pytesseract", "pdf2image", "Pillow"]
 dev = ["pytest"]
 
-[tool.setuptools]
-py-modules = ["faiss_index", "config", "constants", "utils_ocr", "i18n", "providers"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+faiss_index = ["locale/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
