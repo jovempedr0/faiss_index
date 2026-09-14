@@ -13,7 +13,6 @@ import numpy as np
 
 from . import constants
 from .i18n import _
-from .utils_ocr import extract_text_from_file_ocr_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +84,23 @@ class DocumentIngestionMixin:
 
         Raises:
             ValueError: If `file_path`'s extension isn't in `SUPPORTED_FILE_EXTENSIONS`.
+            ImportError: If it's a .pdf/.doc/.docx and the optional OCR dependencies
+                (`pip install -e ".[ocr]"`) aren't installed.
         """
         if file_path.lower().endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
         if file_path.lower().endswith(self.SUPPORTED_FILE_EXTENSIONS):
+            # Imported here rather than at module level: utils_ocr needs the optional
+            # [ocr] extra (pdfplumber/pytesseract/pdf2image/Pillow), which shouldn't be
+            # required just to import the package or to index .txt files.
+            try:
+                from .utils_ocr import extract_text_from_file_ocr_fallback
+            except ImportError as e:
+                raise ImportError(
+                    _("Reading .pdf/.doc/.docx files needs the optional OCR dependencies. "
+                      "Install them with: pip install -e \".[ocr]\"")
+                ) from e
             return extract_text_from_file_ocr_fallback(file_path)
         raise ValueError(
             f"Unsupported file extension for '{file_path}'. "

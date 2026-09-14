@@ -37,8 +37,11 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
 Required dependencies:
 
 ```bash
-pip install numpy faiss-cpu "openai>=1.40" nltk python-dotenv scikit-learn psutil
+pip install numpy faiss-cpu "openai>=1.40" nltk python-dotenv scikit-learn psutil rank-bm25
 ```
+
+That's enough to import the package and index `.txt` files; reading `.pdf`/`.doc`/`.docx`
+needs the `ocr` extra (see [Required setup](#required-setup)).
 
 Alternatively, from this repository (editable install, with the OCR and MPS extras):
 
@@ -74,7 +77,10 @@ pip install torch
 3. **Reading PDF/DOC/DOCX**: depends on `extract_text_from_file_ocr_fallback`
    (`utils_ocr.py`), which in turn needs `pdfplumber`, `pytesseract`, `pdf2image`,
    `Pillow`, and the `libreoffice` binary on the PATH (to convert `.doc`/`.docx`
-   before OCR). `.txt` files are read directly and don't need any of this.
+   before OCR) — install the Python side with `pip install -e ".[ocr]"`. `.txt` files
+   are read directly and don't need any of this: `utils_ocr` is only imported when a
+   `.pdf`/`.doc`/`.docx` is actually read (raising an `ImportError` pointing at the
+   extra if it's missing).
    `pytesseract` can be swapped for a vision-capable chat model via
    `FAISS_INDEX_OCR_VLM_MODEL` — see
    [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules).

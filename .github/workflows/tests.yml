@@ -20,8 +20,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # ocr: core.py (via its _ingestion.py mixin) imports utils_ocr unconditionally,
-      # so it's needed just to import the package, not only for actual OCR calls.
+      # ocr: needed by tests/test_utils_ocr.py, which imports utils_ocr directly (the
+      # package itself only imports it lazily, when a .pdf/.doc/.docx is read —
+      # tests/test_optional_dependencies.py checks it imports fine without the extra).
       # rerank/docling extras
       # are imported lazily inside their provider classes, which the unit suite
       # (pytest -m "not integration", the pyproject default) never instantiates.
