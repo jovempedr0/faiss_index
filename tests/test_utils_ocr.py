@@ -191,6 +191,42 @@ def test_get_vlm_provider_initializes_only_once_under_concurrent_access(monkeypa
     utils_ocr._vlm_provider = None  # don't leak state into other tests
 
 
+# --- convert_pdf_to_images ------------------------------------------------------
+
+def _fake_convert_from_path(calls):
+    """Mimics pdf2image.convert_from_path: one image per page in first_page..last_page (1-based)."""
+    def fake(file_path, dpi, output_folder, first_page, last_page, thread_count):
+        calls.append((first_page, last_page))
+        return [f"image-of-page-{page}" for page in range(first_page - 1, last_page)]
+    return fake
+
+
+def test_convert_pdf_to_images_maps_non_contiguous_pages_to_their_own_images(monkeypatch):
+    # Regression test: pages were rendered as one min..max range and zipped against
+    # problematic_pages, so with a gap ([0, 6, 7, 8]) pages 6/7/8 got the images of
+    # pages 1/2/3 — OCR re-read already-valid pages and never saw the broken ones.
+    calls = []
+    monkeypatch.setattr(utils_ocr, "convert_from_path", _fake_convert_from_path(calls))
+
+    images = utils_ocr.convert_pdf_to_images("fake.pdf", [0, 6, 7, 8], "/tmp/unused", ocr_dpi=300)
+
+    assert images == {
+        0: "image-of-page-0",
+        6: "image-of-page-6",
+        7: "image-of-page-7",
+        8: "image-of-page-8",
+    }
+    assert calls == [(1, 1), (7, 9)]  # valid pages 1-5 are never rendered
+
+
+def test_convert_pdf_to_images_no_problematic_pages_renders_nothing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(utils_ocr, "convert_from_path", _fake_convert_from_path(calls))
+
+    assert utils_ocr.convert_pdf_to_images("fake.pdf", [], "/tmp/unused", ocr_dpi=300) == {}
+    assert calls == []
+
+
 # --- process_problematic_pages (orchestration, real merge_ocr_results) -------
 
 def test_process_problematic_pages_orchestrates_convert_ocr_and_merge(monkeypatch):

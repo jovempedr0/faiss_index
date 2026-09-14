@@ -246,19 +246,34 @@ def convert_pdf_to_images(
         dict[int, Any]: A dictionary where the keys are the converted pages' indices and
             the values are the corresponding image objects.
     """
-    if not problematic_pages:
-        return {}
+    images = {}
+    # One render per run of consecutive pages, each image keyed by its own page
+    # number. A single min..max render zipped against `problematic_pages` only lines
+    # up when those pages are contiguous — with a gap (e.g. [0, 6, 7]) page 6 got page
+    # 1's image, and valid pages in between were rendered at OCR DPI for nothing.
+    for first, last in _consecutive_page_runs(problematic_pages):
+        run_images = convert_from_path(
+            file_path,
+            dpi=ocr_dpi,
+            output_folder=temp_dir,
+            first_page=first + 1,
+            last_page=last + 1,
+            thread_count=os.cpu_count() or 1
+        )
+        images.update(zip(range(first, last + 1), run_images))
 
-    images = convert_from_path(
-        file_path,
-        dpi=ocr_dpi,
-        output_folder=temp_dir,
-        first_page=min(problematic_pages) + 1,
-        last_page=max(problematic_pages) + 1,
-        thread_count=os.cpu_count() or 1
-    )
+    return images
 
-    return dict(zip(problematic_pages, images))
+
+def _consecutive_page_runs(pages: list[int]) -> list[tuple[int, int]]:
+    """Groups page indices into (first, last) runs of consecutive pages: [0, 2, 3] -> [(0, 0), (2, 3)]."""
+    runs: list[tuple[int, int]] = []
+    for page in sorted(pages):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], page)
+        else:
+            runs.append((page, page))
+    return runs
 
 
 def preprocess_image(img):
