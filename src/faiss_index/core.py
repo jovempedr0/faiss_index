@@ -1003,7 +1003,7 @@ class FaissDocumentIndex:
         ]
 
 
-    def compare_strategies(self, queries: List[str], document_type: str, strategies_compare: list[str], k: int = 15) -> Dict:
+    def compare_strategies(self, queries: List[str], document_type: str, strategies_compare: list[str], k: int = 15, use_hybrid: bool = False) -> Dict:
         """
         Compares different search strategies for a list of queries, evaluating each one's performance.
 
@@ -1012,26 +1012,38 @@ class FaissDocumentIndex:
             document_type (str): Document type or context to use when evaluating the strategies.
             strategies_compare (list[str]): Strategies to compare (e.g.: ["full", "chunks"]).
             k (int, optional): Number of results to return per query. Defaults to 15.
+            use_hybrid (bool): If True, evaluates each strategy with
+                `evaluate_strategy_hybrid` (dense + BM25 via RRF) instead of
+                `evaluate_strategy`. Defaults to False.
 
         Returns:
             Dict: A dictionary with, for each query, the results of the different strategies evaluated.
         """
         comparisons = {}
+        evaluate = self.evaluate_strategy_hybrid if use_hybrid else self.evaluate_strategy
 
         for query in queries:
             logger.info(_("Query: %(query)s...") % {"query": query[:50]})
             comparisons[query] = {}
 
             for strategy in strategies_compare:
-                results = self.evaluate_strategy(query, document_type, strategy, k)
+                results = evaluate(query, document_type, strategy, k)
                 comparisons[query][strategy] = results
 
                 if results:
-                    logger.info(_("  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s") % {
-                        "strategy": strategy,
-                        "time": f"{results['search_time']:.3f}",
-                        "dist": f"{results['avg_distance']:.3f}",
-                    })
+                    if 'avg_distance' in results:
+                        logger.info(_("  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s") % {
+                            "strategy": strategy,
+                            "time": f"{results['search_time']:.3f}",
+                            "dist": f"{results['avg_distance']:.3f}",
+                        })
+                    else:
+                        avg_rrf = np.mean([r['rrf_score'] for r in results['results']]) if results['results'] else 0.0
+                        logger.info(_("  %(strategy)s: time=%(time)ss, avg_rrf=%(rrf)s") % {
+                            "strategy": strategy,
+                            "time": f"{results['search_time']:.3f}",
+                            "rrf": f"{avg_rrf:.4f}",
+                        })
 
         return comparisons
 
@@ -1085,11 +1097,17 @@ class FaissDocumentIndex:
         # --- Criterion 1: Speed (lower is better)
         speed_score = 1 / (1 + results['search_time'] * 10)
 
-        # --- Criterion 2: Average distance (lower is better)
-        distance_score = 1 / (1 + results['avg_distance'])
-
-        # --- Criterion 3: Variance (more stable is better)
-        variance_score = 1 / (1 + results['std_distance'])
+        # --- Criteria 2 & 3: Relevance signal — evaluate_strategy has avg_distance/
+        # std_distance (L2, lower is better); evaluate_strategy_hybrid has neither
+        # (it fuses two incompatible scales via RRF instead) but carries rrf_score
+        # per result (already higher-is-better, naturally bounded).
+        if 'avg_distance' in results:
+            distance_score = 1 / (1 + results['avg_distance'])
+            variance_score = 1 / (1 + results['std_distance'])
+        else:
+            rrf_scores = [r['rrf_score'] for r in results['results']]
+            distance_score = float(np.mean(rrf_scores)) if rrf_scores else 0.0
+            variance_score = 1 / (1 + float(np.std(rrf_scores))) if rrf_scores else 0.0
 
         # --- Criterion 4: File diversity among the top-k results
         unique_files = len({r['metadata']['file'] for r in results['results']})
@@ -1116,7 +1134,7 @@ class FaissDocumentIndex:
         return final_score
 
 
-    def generate_search(self, received_query:list[str], keywords:List[str], document_type:str, strategies_compare:list[str]) -> Tuple[List, Dict]:
+    def generate_search(self, received_query:list[str], keywords:List[str], document_type:str, strategies_compare:list[str], use_hybrid: bool = False) -> Tuple[List, Dict]:
         """
         Runs a search based on a received query, keywords, and document type.
 
@@ -1125,19 +1143,22 @@ class FaissDocumentIndex:
             keywords (List[str]): Keywords to help the search.
             document_type (str): Document type to steer the search strategy.
             strategies_compare (list[str]): Strategies to compare (e.g.: ["full", "chunks"]).
+            use_hybrid (bool): Passed through to `compare_strategies` — evaluates with
+                `evaluate_strategy_hybrid` (dense + BM25) instead of `evaluate_strategy`
+                when True. Defaults to False.
 
         Returns:
             tuple: A tuple with the search results and the heuristic scores.
         """
 
         cleaned_query = clean_text(received_query[0])
-        results = self.compare_strategies(cleaned_query, document_type, strategies_compare, k=20)
+        results = self.compare_strategies(cleaned_query, document_type, strategies_compare, k=20, use_hybrid=use_hybrid)
         scores = self.calculate_heuristic_score(results, keywords)
 
         return results, scores
 
 
-    def generate_search_by_type(self, received_query: str, document_type: str, strategy: str, require_gpu: bool) -> List[str]:
+    def generate_search_by_type(self, received_query: str, document_type: str, strategy: str, require_gpu: bool, k: int = 5, use_hybrid: bool = False, rerank: bool = False) -> List[str]:
         """
         Runs a search based on a received query, using a specific strategy.
 
@@ -1146,6 +1167,12 @@ class FaissDocumentIndex:
             document_type (str): Document type to steer the search strategy.
             strategy (str): Indexing strategy to use (e.g.: 'chunks').
             require_gpu (bool): If True, requires the FAISS index to be loaded on GPU.
+            k (int): How many chunks to return. Defaults to 5.
+            use_hybrid (bool): If True, retrieves with `evaluate_strategy_hybrid`
+                (dense + BM25 via RRF) instead of `evaluate_strategy`. Defaults to False.
+            rerank (bool): If True, retrieves a larger candidate pool
+                (`max(k * 4, 20)`) and narrows it to `k` via `rerank_results` (needs
+                `self.rerank_provider` configured on the constructor). Defaults to False.
 
         Returns:
             List[str]: A list of text chunks corresponding to the search results.
@@ -1170,9 +1197,15 @@ class FaissDocumentIndex:
 
         cleaned_query_str = cleaned_query_list[0]
 
-        results = self.evaluate_strategy(cleaned_query_str, document_type, strategy, k=5)
+        evaluate = self.evaluate_strategy_hybrid if use_hybrid else self.evaluate_strategy
+        retrieval_k = max(k * 4, 20) if rerank else k
+        results = evaluate(cleaned_query_str, document_type, strategy, k=retrieval_k)
+        result_items = results.get('results', [])
 
-        chunks = [res['metadata']['chunk_text'] for res in results.get('results', [])]
+        if rerank:
+            result_items = self.rerank_results(cleaned_query_str, result_items, k=k)
+
+        chunks = [res['metadata']['chunk_text'] for res in result_items]
 
         return chunks
 

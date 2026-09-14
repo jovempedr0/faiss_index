@@ -288,7 +288,21 @@ scores = idx.calculate_heuristic_score(comparison, keywords=["termination", "pen
 best_strategy = max(scores, key=lambda s: scores[s]["mean_score"])
 ```
 
-`generate_search` is the shortcut for this same flow, cleaning the query first:
+`use_hybrid=True` evaluates each strategy with `evaluate_strategy_hybrid` instead —
+`calculate_heuristic_score` adapts its scoring automatically (there's no `avg_distance`
+to work with there, so it uses the RRF scores' mean/spread instead):
+
+```python
+comparison = idx.compare_strategies(
+    queries=["termination clause"],
+    document_type="contract",
+    strategies_compare=["full", "chunks"],
+    use_hybrid=True,
+)
+```
+
+`generate_search` is the shortcut for this same flow, cleaning the query first (it
+also takes `use_hybrid`, passed straight through to `compare_strategies`):
 
 ```python
 results, scores = idx.generate_search(
@@ -320,6 +334,23 @@ Only works with `strategy="chunks"` — the return value reads
 `metadata["chunk_text"]`, a key that only exists in the `chunks` strategy's
 metadata (`full`/`sections` store the text under `content`/`section_text` and will
 raise a `KeyError` here).
+
+`k` (default 5), `use_hybrid`, and `rerank` are also accepted — `use_hybrid` switches
+to `evaluate_strategy_hybrid`, and `rerank` retrieves a larger candidate pool and
+narrows it to `k` via `rerank_results` (needs `rerank_provider` configured on the
+constructor):
+
+```python
+chunks = idx.generate_search_by_type(
+    received_query="termination clause",
+    document_type="contract",
+    strategy="chunks",
+    require_gpu=False,
+    k=5,
+    use_hybrid=True,
+    rerank=True,
+)
+```
 
 ### Adding documents without rebuilding the index
 
@@ -396,20 +427,23 @@ built from `openai_key`/`embedding_model`/`section_extraction_model` — see
   via `self.rerank_provider` — see [Reranking](#reranking-retrieve-then-rerank). Raises
   `ValueError` if no `rerank_provider` was configured.
 
-- **`compare_strategies(queries, document_type, strategies_compare, k=15) -> Dict`**
-  Runs `evaluate_strategy` for several queries × strategies, for comparison.
+- **`compare_strategies(queries, document_type, strategies_compare, k=15, use_hybrid=False) -> Dict`**
+  Runs `evaluate_strategy` (or `evaluate_strategy_hybrid`, if `use_hybrid=True`) for
+  several queries × strategies, for comparison.
 
 - **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`**
-  Scores each strategy (speed, distance, variance, file diversity, and,
-  optionally, presence of `keywords`) to help pick which strategy to use.
+  Scores each strategy (speed, distance/RRF score, variance, file diversity, and,
+  optionally, presence of `keywords`) to help pick which strategy to use — works with
+  results from either `evaluate_strategy` or `evaluate_strategy_hybrid`.
 
-- **`generate_search(received_query, keywords, document_type, strategies_compare) -> Tuple[Dict, Dict]`**
+- **`generate_search(received_query, keywords, document_type, strategies_compare, use_hybrid=False) -> Tuple[Dict, Dict]`**
   Shortcut: cleans the query, compares strategies, and computes the heuristic
   scores.
 
-- **`generate_search_by_type(received_query, document_type, strategy, require_gpu) -> List[str]`**
+- **`generate_search_by_type(received_query, document_type, strategy, require_gpu, k=5, use_hybrid=False, rerank=False) -> List[str]`**
   High-level shortcut: loads the index if it's not already in memory, searches
-  with `k=5`, and returns just the found chunks' texts.
+  with `k` results (optionally via `evaluate_strategy_hybrid` and/or narrowed down
+  with `rerank_results`), and returns just the found chunks' texts.
 
 ### Lifecycle of the in-memory indices
 
