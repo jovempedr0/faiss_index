@@ -551,6 +551,14 @@ Automatic index type selection (`index_type="auto"`, the default):
 - `auto_index_thresholds[0] < n ≤ auto_index_thresholds[1]` → `IndexIVFFlat` (approximate)
 - `n > auto_index_thresholds[1]` → `IndexIVFPQ` (approximate + compressed)
 
+`IndexIVFPQ` needs at least `2**pq_nbits` vectors to train its product quantizer (256
+with the default `pq_nbits=8`) — a separate, higher floor than `ivf_nlist`'s own
+minimum. Below it, `_build_faiss_index` falls back to `IndexIVFFlat` for that
+corpus (with a warning) instead of letting FAISS raise a training error. Only
+reachable with `index_type="ivf_pq"` forced explicitly, or `auto_index_thresholds`
+lowered well below the default `80_000` — the default thresholds never route a
+corpus that small into `ivf_pq`.
+
 ## Models used
 
 With the default provider (see [Plugging in a custom provider](#plugging-in-a-custom-provider)

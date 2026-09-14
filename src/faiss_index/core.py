@@ -718,6 +718,21 @@ class FaissDocumentIndex:
         nlist = self._compute_nlist(n)
         quantizer = faiss.IndexFlatL2(self.embedding_dim)
 
+        if kind == "ivf_pq":
+            # IndexIVFPQ's product-quantizer training needs at least 2**pq_nbits points,
+            # independent of nlist — a much higher floor than _compute_nlist's per-cluster
+            # minimum (which only covers IndexIVFFlat's requirement). FAISS raises a hard
+            # C++ error below this, not a warning, so this has to be checked beforehand.
+            min_pq_training_points = 2 ** self.pq_nbits
+            if n < min_pq_training_points:
+                logger.warning(
+                    _("Only %(n)s vectors available, but 'ivf_pq' needs at least %(min)s to "
+                      "train its product quantizer (2**pq_nbits=%(pq_nbits)s) — falling back "
+                      "to 'ivf_flat' for this corpus.")
+                    % {"n": n, "min": min_pq_training_points, "pq_nbits": self.pq_nbits}
+                )
+                kind = "ivf_flat"
+
         if kind == "ivf_flat":
             index = faiss.IndexIVFFlat(quantizer, self.embedding_dim, nlist)
         elif kind == "ivf_pq":
