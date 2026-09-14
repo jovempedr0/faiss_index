@@ -273,7 +273,9 @@ for r in result["results"]:
 
 The BM25 side is built lazily, in memory, from the metadata already loaded for that
 `document_type`/`strategy` (no extra files on disk, no LLM/embedding calls) and cached
-on the instance — invalidated automatically by `add_new_documents`/`unload_indices`.
+on the instance — invalidated automatically by `add_new_documents`/`unload_indices`/
+`load_indices` (reloading a strategy already in memory drops its stale BM25 index too,
+not just adding/removing one).
 Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
 (whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
 `similarity`.
