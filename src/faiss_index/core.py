@@ -1019,7 +1019,7 @@ class FaissDocumentIndex:
         comparisons = {}
 
         for query in queries:
-            print(_("\nQuery: %(query)s...") % {"query": query[:50]})
+            logger.info(_("Query: %(query)s...") % {"query": query[:50]})
             comparisons[query] = {}
 
             for strategy in strategies_compare:
@@ -1027,7 +1027,7 @@ class FaissDocumentIndex:
                 comparisons[query][strategy] = results
 
                 if results:
-                    print(_("  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s") % {
+                    logger.info(_("  %(strategy)s: time=%(time)ss, avg_dist=%(dist)s") % {
                         "strategy": strategy,
                         "time": f"{results['search_time']:.3f}",
                         "dist": f"{results['avg_distance']:.3f}",
