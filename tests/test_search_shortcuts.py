@@ -1,6 +1,8 @@
 import numpy as np
 import faiss
 
+from faiss_index import config
+
 
 def _build_chunks_index(idx, texts):
     metadata = [
@@ -119,6 +121,47 @@ def test_generate_search_by_type_empty_query_returns_empty_list(make_index):
     chunks = idx.generate_search_by_type("... !!! ,,,", "doctype", "chunks", require_gpu=False)
 
     assert chunks == []
+
+
+def _build_on_disk(idx, fake_chat_provider, tmp_path, texts):
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "out"
+    (data_dir / "doctype").mkdir(parents=True)
+    for i, text in enumerate(texts):
+        (data_dir / "doctype" / f"doc_{i}.txt").write_text(text, encoding="utf-8")
+    fake_chat_provider.responses.append({"sections": []})  # no structure -> skip "sections"
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+    return output_dir
+
+
+def test_generate_search_by_type_loads_index_from_default_path_when_not_in_memory(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)  # fresh instance, nothing in memory
+
+    chunks = idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=2)
+
+    assert sorted(chunks) == ["texto dois", "texto um"]
+
+
+def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # Regression test: with require_gpu=True and no GPU acceleration for the index
+    # (no CUDA, and use_mps=False or an IVF index), the loaded-check always failed, so
+    # every call reloaded the index from disk over the in-memory one — silently
+    # discarding documents added via add_new_documents since the index was saved.
+    idx = make_index(embedding_dim=4)
+    output_dir = _build_on_disk(idx, fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx.add_new_documents("doctype", [("novo.txt", "documento recem adicionado")])
+
+    chunks = idx.generate_search_by_type("documento recem adicionado", "doctype", "chunks", require_gpu=True, k=1)
+
+    assert chunks == ["documento recem adicionado"]
+    assert idx.indices["doctype"]["chunks"][0].ntotal == 3
 
 
 def test_generate_search_by_type_default_k_is_five(make_index):

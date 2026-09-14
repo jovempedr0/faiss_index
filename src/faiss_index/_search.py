@@ -394,10 +394,16 @@ class SearchMixin:
         Returns:
             List[str]: A list of text chunks corresponding to the search results.
         """
-        is_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
-
-        if is_loaded:
+        if self._is_single_index_loaded(document_type, strategy, require_gpu=False):
             logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
+
+            if require_gpu and not self._is_single_index_loaded(document_type, strategy, require_gpu=True):
+                # Already in memory, just not GPU-accelerated: move that same index
+                # instead of reloading it from disk, which would silently discard
+                # anything added via add_new_documents since it was saved (and re-read
+                # the files on every call). Without CUDA this keeps the index on CPU.
+                index, metadata, embeddings = self.indices[document_type][strategy]
+                self.indices[document_type][strategy] = (self._move_index_to_gpu(index, strategy), metadata, embeddings)
         else:
             logger.info(_("Index for '%(document_type)s/%(strategy)s' not found. Loading now...") % {"document_type": document_type, "strategy": strategy})
 
