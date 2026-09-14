@@ -648,11 +648,22 @@ own object implementing `extract_sections(file_path: str) -> Dict[str, str]`.
 ## The `config.py` and `constants.py` modules
 
 The package (`src/faiss_index/`) is a regular, self-contained Python package —
-`core.py` (the `FaissDocumentIndex` class), `utils_ocr.py`, `providers.py`,
-`config.py`, `constants.py`, and `i18n.py` all live together and import each other as
-relative submodules, with no dependency on an external `src.utils` package or any
-assumption about the host project's directory structure. `config.py`/`constants.py`
-hold what used to be scattered (or hardcoded) inside the main class:
+`core.py`, `utils_ocr.py`, `providers.py`, `config.py`, `constants.py`, and `i18n.py`
+all live together and import each other as relative submodules, with no dependency on
+an external `src.utils` package or any assumption about the host project's directory
+structure. `config.py`/`constants.py` hold what used to be scattered (or hardcoded)
+inside the main class:
+
+`core.py` itself only holds the `FaissDocumentIndex` constructor; its methods are
+implemented across five internal, single-concern mixins that `core.py` composes into
+the class (each still callable as if it were a plain method — mixin methods call each
+other freely via `self`, regardless of which module they're defined in): the
+LLM-calibrated section schema (`_sections.py`), turning documents into
+embeddings/metadata (`_ingestion.py`), FAISS index construction and the dense-search
+path incl. MPS (`_index_backend.py`), build/save/load/unload lifecycle
+(`_lifecycle.py`), and dense/hybrid search, reranking and the `generate_search*`
+shortcuts (`_search.py`). These `_*.py` modules are an implementation detail of
+`core.py`, not meant to be imported directly.
 
 - **`constants.py`** — fixed protocol/algorithm values that don't vary by
   environment: supported file extensions, embedding dimension per model, the JSON
@@ -689,7 +700,7 @@ hold what used to be scattered (or hardcoded) inside the main class:
 
 ## Log language
 
-All `logger.*`/`print()` messages in `core.py`, `config.py`, and `utils_ocr.py` go
+All `logger.*`/`print()` messages in `core.py` (and the `_*.py` mixins it composes), `config.py`, and `utils_ocr.py` go
 through `i18n.py`, which uses Python's standard `gettext`. The text in the source code
 is in English (that's gettext's `msgid`); `src/faiss_index/locale/pt/LC_MESSAGES/`
 carries the Portuguese translation.

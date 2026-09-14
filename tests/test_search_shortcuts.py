@@ -107,6 +107,20 @@ def test_generate_search_by_type_rerank_narrows_to_k(make_index, fake_rerank_pro
     assert chunks == ["texto muito relevante", "texto medio"]
 
 
+def test_generate_search_by_type_empty_query_returns_empty_list(make_index):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois"])
+
+    # Regression test: clean_text() always returns a 1-element list ([text.strip()]),
+    # even when the text becomes empty after stripping punctuation/stopwords — so a
+    # query made of nothing but punctuation used to sail past the "empty query" check
+    # (which tested the always-truthy wrapping list, not its content) and search with
+    # a zero-vector embedding fallback instead of short-circuiting to [].
+    chunks = idx.generate_search_by_type("... !!! ,,,", "doctype", "chunks", require_gpu=False)
+
+    assert chunks == []
+
+
 def test_generate_search_by_type_default_k_is_five(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, [f"texto numero {i}" for i in range(8)])

@@ -1,3 +1,5 @@
+import threading
+
 from faiss_index import utils_ocr
 
 
@@ -125,6 +127,31 @@ def test_process_pdf_file_runs_ocr_fallback_for_problematic_pages(monkeypatch):
     result = utils_ocr.process_pdf_file("fake.pdf", ocr_dpi=300, max_workers=None)
 
     assert result == "a\nocr-b"
+
+
+# --- run_ocr_on_images --------------------------------------------------------
+
+def test_run_ocr_on_images_runs_tasks_concurrently(monkeypatch):
+    # Regression test: run_ocr_on_images used to call .submit(...).result() on each
+    # image within the same comprehension step, which blocks the main thread on one
+    # task's result before submitting the next — serializing everything despite the
+    # ThreadPoolExecutor. A barrier only releases once ALL n workers have reached it,
+    # so this proves the n tasks were actually in flight at the same time: submitted
+    # one-at-a-time-and-awaited would leave the later tasks never scheduled, and the
+    # barrier would time out.
+    n = 4
+    barrier = threading.Barrier(n, timeout=2)
+
+    def fake_process_image(img):
+        barrier.wait()
+        return f"text-{img}"
+
+    monkeypatch.setattr(utils_ocr, "process_image", fake_process_image)
+
+    images = {i: i for i in range(n)}
+    result = utils_ocr.run_ocr_on_images(images, max_workers=n)
+
+    assert result == {i: f"text-{i}" for i in range(n)}
 
 
 # --- process_problematic_pages (orchestration, real merge_ocr_results) -------

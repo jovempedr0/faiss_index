@@ -68,6 +68,34 @@ def test_hybrid_search_recovers_exact_term_missed_by_dense(make_index, monkeypat
     assert "doc_b.txt" in hybrid_files
 
 
+def test_evaluate_strategy_hybrid_excludes_zero_score_documents_from_bm25_pool(make_index):
+    # Regression test: bm25_indices used to be built with a plain
+    # np.argsort(bm25_scores)[::-1][:pool], with no floor on the score — so once `pool`
+    # reaches the corpus size (as it does here: default pool=max(k*4,50), capped at
+    # ntotal=5), documents sharing NO term with the query still got included (and thus
+    # a bm25_rank / RRF contribution) purely by filling out the slice, diluting the
+    # whole point of the lexical signal.
+    metadata = [
+        {"file": "doc_0.txt", "type": "chunk", "chunk_text": "zebra selvagem correndo"},
+        {"file": "doc_1.txt", "type": "chunk", "chunk_text": "elefante grande andando"},
+        {"file": "doc_2.txt", "type": "chunk", "chunk_text": "leao forte rugindo"},
+        {"file": "doc_3.txt", "type": "chunk", "chunk_text": "tigre listrado cacando"},
+        {"file": "doc_4.txt", "type": "chunk", "chunk_text": "urso marrom dormindo"},
+    ]
+    idx = make_index(embedding_dim=4)
+    embeddings = idx.get_embeddings([m["chunk_text"] for m in metadata])
+    index = faiss.IndexFlatL2(4)
+    index.add(embeddings.astype("float32"))
+    idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
+
+    results = idx.evaluate_strategy_hybrid("zebra", "doctype", "chunks", k=5)
+
+    by_file = {r["metadata"]["file"]: r for r in results["results"]}
+    assert by_file["doc_0.txt"]["bm25_rank"] == 0
+    for other_file in ("doc_1.txt", "doc_2.txt", "doc_3.txt", "doc_4.txt"):
+        assert by_file[other_file]["bm25_rank"] is None
+
+
 def test_add_new_documents_invalidates_bm25_cache(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, ["texto original um", "texto original dois"])

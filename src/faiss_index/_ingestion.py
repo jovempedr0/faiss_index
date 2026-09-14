@@ -1,0 +1,217 @@
+"""
+Mixin for FaissDocumentIndex: turning raw document files into (embeddings, metadata)
+pairs — reading files (with OCR fallback), calling the embedding provider, and the
+three indexing strategies ("full", "sections", "chunks"). Composed into the class in
+`core.py`; not meant to be imported directly by users.
+"""
+import logging
+import time
+from typing import Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from . import constants
+from .i18n import _
+from .utils_ocr import extract_text_from_file_ocr_fallback
+
+logger = logging.getLogger(__name__)
+
+
+class DocumentIngestionMixin:
+
+    def get_embeddings(self, texts: List[str]) -> np.ndarray:
+        """
+        Generates embeddings for a list of texts using the OpenAI embedding model,
+        in batches (`self.embedding_batch_size` texts per call) to reduce the number of
+        network round-trips relative to one call per text.
+
+        Parameters:
+            texts (List[str]): List of strings with the texts to generate embeddings for.
+
+        Returns:
+            np.ndarray: A numpy array with the embeddings generated for each text, in the
+                        same order as `texts` (1 row per text — texts that end up empty
+                        after cleaning get a zero vector, to preserve alignment with
+                        metadata in the create_embeddings_* callers).
+        """
+        cleaned_texts = []
+        for text in texts:
+            # Remove null bytes and control characters that would invalidate the JSON
+            text_limpo = (
+                text.replace('\x00', '')
+                    .encode('utf-8', errors='ignore')
+                    .decode('utf-8')
+                    .strip()
+            )
+            cleaned_texts.append(text_limpo[:constants.MAX_EMBEDDING_INPUT_CHARS])
+
+        embeddings: List[Optional[List[float]]] = [None] * len(cleaned_texts)
+
+        for batch_start in range(0, len(cleaned_texts), self.embedding_batch_size):
+            batch_indices = range(batch_start, min(batch_start + self.embedding_batch_size, len(cleaned_texts)))
+            batch_indices_with_text = [i for i in batch_indices if cleaned_texts[i]]
+            batch_inputs = [cleaned_texts[i] for i in batch_indices_with_text]
+
+            if batch_inputs:
+                batch_embeddings = self.embedding_provider.embed(batch_inputs)
+                for i, embedding in zip(batch_indices_with_text, batch_embeddings):
+                    embeddings[i] = embedding
+
+            for i in batch_indices:
+                if embeddings[i] is None:
+                    logger.warning(_("Text became empty after cleaning; using a zero vector to preserve alignment with metadata."))
+                    embeddings[i] = [0.0] * self.embedding_dim
+
+        return np.array(embeddings)
+
+    def read_document(self, file_path: str) -> str:
+        """
+        Reads the content of a document file.
+        If the file is a .txt, reads it directly as UTF-8 text. Otherwise (.pdf/.doc/.docx),
+        uses `extract_text_from_file_ocr_fallback` to extract the text (with OCR fallback).
+
+        Parameters:
+            file_path (str): Path to the document file.
+
+        Returns:
+            str: Text content extracted from the file.
+
+        Raises:
+            ValueError: If `file_path`'s extension isn't in `SUPPORTED_FILE_EXTENSIONS`.
+        """
+        if file_path.lower().endswith('.txt'):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        if file_path.lower().endswith(self.SUPPORTED_FILE_EXTENSIONS):
+            return extract_text_from_file_ocr_fallback(file_path)
+        raise ValueError(
+            f"Unsupported file extension for '{file_path}'. "
+            f"Supported extensions: {self.SUPPORTED_FILE_EXTENSIONS}."
+        )
+
+    def create_embeddings_full(self, docs: List[Tuple[str, str]]) -> Tuple[np.ndarray, List]:
+        """
+        Generates embeddings for a list of full documents and returns the embeddings
+        together with the metadata.
+
+        Parameters:
+            docs (List[Tuple[str, str]]): List of tuples, each containing the file name
+                and the document's full text.
+
+        Returns:
+            Tuple[np.ndarray, List]: A tuple containing:
+                - A numpy array with the texts' embeddings.
+                - A list of metadata dicts, including the file name and the type ("full").
+        """
+        texts = [doc[1] for doc in docs]
+        embeddings = self.get_embeddings(texts)
+        # Each entry stores ONLY that document's own text (a 1-element list).
+        # Previously the whole corpus (`texts`) was stored in every entry, which made
+        # retrieval degenerate — see processar_resultados_busca.
+        metadata = [{"file": doc[0], "type": "full", "content": [doc[1]], "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())} for doc in docs]
+        return embeddings, metadata
+
+    def create_embeddings_sections(self, docs: List[Tuple[str, str]], document_type: str) -> Tuple[np.ndarray, List]:
+        """
+        Creates embeddings for sections extracted from documents, using the section
+        schema calibrated for `document_type` (see `extract_sections`/`register_document_type`).
+
+        Parameters:
+            docs (List[Tuple[str, str]]): List of tuples with the file path and the document's content.
+            document_type (str): Document type whose section schema will be used.
+
+        Returns:
+            Tuple[np.ndarray, List]:
+                - A numpy array with the extracted sections' embeddings.
+                - A list of metadata for each section, including the file path, the
+                  section name, and the type.
+        """
+        return self._build_section_embeddings(
+            docs, lambda file_path, content: self.extract_sections(content, document_type)
+        )
+
+    def create_embeddings_sections_via_structure(self, docs: List[Tuple[str, str]]) -> Tuple[np.ndarray, List]:
+        """
+        Creates embeddings for sections extracted via `self.structure_provider`
+        (e.g. `providers.DoclingStructureProvider`) instead of the LLM-calibrated
+        pattern schema — each document's own real structure (heading hierarchy)
+        defines its sections, so no calibration is needed for the document_type.
+
+        Parameters:
+            docs (List[Tuple[str, str]]): List of tuples with the file path and the
+                document's content (the content itself isn't used for extraction here
+                — the provider re-reads the file directly to see its real layout —
+                but is still recorded in each section's metadata, same as
+                `create_embeddings_sections`).
+
+        Returns:
+            Tuple[np.ndarray, List]: Same shape as `create_embeddings_sections`.
+        """
+        return self._build_section_embeddings(
+            docs, lambda file_path, content: self.structure_provider.extract_sections(file_path)
+        )
+
+    def _build_section_embeddings(
+        self, docs: List[Tuple[str, str]], extract_fn: Callable[[str, str], Dict[str, str]]
+    ) -> Tuple[np.ndarray, List]:
+        """
+        Shared implementation behind `create_embeddings_sections` and
+        `create_embeddings_sections_via_structure` — the two differ only in how a
+        document's sections are extracted (`extract_fn(file_path, content) -> sections`),
+        not in how the resulting sections become embeddings/metadata.
+        """
+        all_texts = []
+        all_metadata = []
+
+        for file_path, content in docs:
+            sections = extract_fn(file_path, content)
+            for section_name, section_text in sections.items():
+                if section_text and section_name != "completo":
+                    all_texts.append(section_text)
+                    all_metadata.append({
+                        "file": file_path,
+                        "section_name": section_name,
+                        "type": "section",
+                        "section_text": section_text,
+                        "content": content,
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+                    })
+
+        embeddings = self.get_embeddings(all_texts)
+        return embeddings, all_metadata
+
+    def create_embeddings_chunks(self, docs: List[Tuple[str, str]], chunk_size: int = constants.DEFAULT_CHUNK_SIZE_WORDS) -> Tuple[np.ndarray, List]:
+        """
+        Splits documents into chunks, generates embeddings for each chunk, and returns
+        the embeddings together with the metadata.
+
+        Parameters:
+            docs (List[Tuple[str, str]]): List of tuples with the file path and the document's content.
+            chunk_size (int, optional): Size of each chunk in number of words. Defaults to 500.
+
+        Returns:
+            Tuple[np.ndarray, List]:
+                - A numpy array with the chunks' embeddings.
+                - A list of metadata dicts for each chunk, including the file path, chunk
+                  index, and type.
+        """
+        all_texts = []
+        all_metadata = []
+
+        for file_path, content in docs:
+            words = content.split()
+            chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size//2)]
+
+            for i, chunk in enumerate(chunks):
+                if chunk:
+                    all_texts.append(chunk)
+                    all_metadata.append({
+                        "file": file_path,
+                        "chunk_index": i,
+                        "type": "chunk",
+                        "chunk_text": chunk,
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+                    })
+
+        embeddings = self.get_embeddings(all_texts)
+        return embeddings, all_metadata

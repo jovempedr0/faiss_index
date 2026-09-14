@@ -351,10 +351,11 @@ def run_ocr_on_images(images: dict[int, Any], max_workers: int) -> dict[int, str
             values are the texts extracted via OCR.
     """
     with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as executor:
-        return {
-            i: executor.submit(process_image, img).result()
-            for i, img in images.items()
-        }
+        # Submit every task before blocking on any result — awaiting each future
+        # immediately after submitting it (in the same comprehension) would run them
+        # one at a time, defeating the thread pool entirely.
+        futures = {i: executor.submit(process_image, img) for i, img in images.items()}
+        return {i: future.result() for i, future in futures.items()}
 
 
 def merge_ocr_results(all_text: list[str], problematic_pages: list[int], ocr_results: dict[int, str]) -> list[str]:
