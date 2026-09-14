@@ -384,7 +384,7 @@ class SearchMixin:
             document_type (str): Document type to steer the search strategy.
             strategy (str): Indexing strategy to use (e.g.: 'chunks').
             require_gpu (bool): If True, requires the FAISS index to be loaded on GPU.
-            k (int): How many chunks to return. Defaults to 5.
+            k (int): How many texts to return. Defaults to 5.
             use_hybrid (bool): If True, retrieves with `evaluate_strategy_hybrid`
                 (dense + BM25 via RRF) instead of `evaluate_strategy`. Defaults to False.
             rerank (bool): If True, retrieves a larger candidate pool
@@ -392,7 +392,8 @@ class SearchMixin:
                 `self.rerank_provider` configured on the constructor). Defaults to False.
 
         Returns:
-            List[str]: A list of text chunks corresponding to the search results.
+            List[str]: The texts of the search results, best first — a chunk, a section,
+                or a whole document, depending on `strategy`.
         """
         if self._is_single_index_loaded(document_type, strategy, require_gpu=False):
             logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
@@ -429,6 +430,4 @@ class SearchMixin:
         if rerank:
             result_items = self.rerank_results(cleaned_query_str, result_items, k=k)
 
-        chunks = [res['metadata']['chunk_text'] for res in result_items]
-
-        return chunks
+        return [self._extract_metadata_text(res['metadata']) for res in result_items]

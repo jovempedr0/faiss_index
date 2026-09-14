@@ -370,10 +370,8 @@ chunks = idx.generate_search_by_type(
 # chunks: List[str], ready to become the context of an LLM prompt, for example.
 ```
 
-Only works with `strategy="chunks"` — the return value reads
-`metadata["chunk_text"]`, a key that only exists in the `chunks` strategy's
-metadata (`full`/`sections` store the text under `content`/`section_text` and will
-raise a `KeyError` here).
+Works with any strategy: each returned text is a chunk for `strategy="chunks"`, a
+section for `"sections"`, or a whole document for `"full"`.
 
 `k` (default 5), `use_hybrid`, and `rerank` are also accepted — `use_hybrid` switches
 to `evaluate_strategy_hybrid`, and `rerank` retrieves a larger candidate pool and
@@ -485,7 +483,8 @@ OpenAI-compatible path) — see
 - **`generate_search_by_type(received_query, document_type, strategy, require_gpu, k=5, use_hybrid=False, rerank=False) -> List[str]`**
   High-level shortcut: loads the index if it's not already in memory, searches
   with `k` results (optionally via `evaluate_strategy_hybrid` and/or narrowed down
-  with `rerank_results`), and returns just the found chunks' texts.
+  with `rerank_results`), and returns just the found texts (chunks, sections or whole
+  documents, depending on `strategy`).
 
 ### Lifecycle of the in-memory indices
 

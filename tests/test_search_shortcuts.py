@@ -164,6 +164,24 @@ def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
     assert idx.indices["doctype"]["chunks"][0].ntotal == 3
 
 
+def test_generate_search_by_type_returns_texts_for_full_and_sections_strategies(make_index, fake_chat_provider, tmp_path):
+    # Regression test: the shortcut read metadata["chunk_text"], which only the
+    # "chunks" strategy stores — "full" (content) and "sections" (section_text)
+    # raised KeyError instead of returning their texts.
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True)
+    (data_dir / "doctype" / "doc.txt").write_text("Cabecalho\nPedidos finais do autor", encoding="utf-8")
+    idx = make_index(embedding_dim=4)
+    fake_chat_provider.responses.append({"sections": [{"name": "pedidos", "patterns": ["pedidos"]}]})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+
+    full = idx.generate_search_by_type("pedidos", "doctype", "full", require_gpu=False, k=1)
+    sections = idx.generate_search_by_type("pedidos", "doctype", "sections", require_gpu=False, k=2)
+
+    assert full == ["Cabecalho\nPedidos finais do autor"]
+    assert sorted(sections) == ["Cabecalho", "Pedidos finais do autor"]
+
+
 def test_generate_search_by_type_default_k_is_five(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, [f"texto numero {i}" for i in range(8)])
