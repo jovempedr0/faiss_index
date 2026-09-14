@@ -26,6 +26,36 @@ def test_extract_sections_assigns_lines_by_pattern(make_index):
     assert result["completo"] == text
 
 
+def test_extract_sections_matches_patterns_as_whole_words_not_substrings(make_index):
+    # Regression test: patterns matched as plain substrings anywhere in a line. On a real
+    # corpus, the LLM-calibrated pattern "lar" (for a "header" section) fired inside
+    # "declarar" and "solicita" (for "requests") inside "solicitação" — 306 of 514 section
+    # switches landed mid-paragraph, scattering prose across unrelated sections.
+    idx = make_index()
+    idx.section_schemas["edital"] = {
+        "header": ["lar", "processo:"],
+        "requests": ["solicita"],
+        "conclusion": ["decido."],
+    }
+    text = "\n".join([
+        "Preambulo",
+        "O candidato devera declarar ciencia das regras.",   # "lar" inside a word
+        "Sera admitida a solicitação de inscrição.",          # "solicita" inside a word
+        "Processo: 0829366-83.2025",                         # pattern ending in punctuation
+        "A parte solicita a gratuidade.",                    # whole word
+        "Decido.",
+    ])
+
+    result = idx.extract_sections(text, "edital")
+
+    assert result["cabecalho"] == (
+        "Preambulo\nO candidato devera declarar ciencia das regras.\nSera admitida a solicitação de inscrição."
+    )
+    assert result["header"] == "Processo: 0829366-83.2025"
+    assert result["requests"] == "A parte solicita a gratuidade."
+    assert result["conclusion"] == "Decido."
+
+
 def test_extract_sections_without_calibrated_schema_raises(make_index):
     idx = make_index()
     with pytest.raises(ValueError):

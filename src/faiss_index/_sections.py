@@ -6,6 +6,7 @@ Composed into the class in `core.py`; not meant to be imported directly by users
 """
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -13,6 +14,24 @@ from . import constants
 from .i18n import _
 
 logger = logging.getLogger(__name__)
+
+
+def _compile_section_patterns(patterns: List[str]) -> "re.Pattern[str]":
+    """
+    One regex matching any of a section's patterns as whole words/phrases, not as
+    arbitrary substrings — a calibrated pattern like "lar" must not fire inside
+    "declarar", nor "solicita" inside "solicitação". The word-boundary guard is only
+    added on sides where the pattern itself starts/ends with a word character, so
+    patterns such as "processo:" or "decido." still match as written.
+    """
+    alternatives = []
+    for pattern in patterns:
+        if not pattern:
+            continue
+        start = r"(?<!\w)" if re.match(r"\w", pattern) else ""
+        end = r"(?!\w)" if re.search(r"\w$", pattern) else ""
+        alternatives.append(start + re.escape(pattern) + end)
+    return re.compile("|".join(alternatives) or r"(?!)")  # (?!) never matches
 
 
 class SectionSchemaMixin:
@@ -50,14 +69,15 @@ class SectionSchemaMixin:
         sections = {"completo": text, "cabecalho": ""}
         sections.update({section_name: "" for section_name in schema})
 
+        matchers = [(section_name, _compile_section_patterns(patterns)) for section_name, patterns in schema.items()]
         lines = text.split('\n')
         current_section = "cabecalho"
 
         for line in lines:
             lower = line.lower().strip()
 
-            for section_name, patterns in schema.items():
-                if any(pattern in lower for pattern in patterns):
+            for section_name, matcher in matchers:
+                if matcher.search(lower):
                     current_section = section_name
                     break
 
