@@ -25,7 +25,7 @@ def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
 
 class DocumentIngestionMixin:
 
-    def get_embeddings(self, texts: List[str]) -> np.ndarray:
+    def get_embeddings(self, texts: List[str], prefix: str = "") -> np.ndarray:
         """
         Generates embeddings for a list of texts using the OpenAI embedding model,
         in batches (`self.embedding_batch_size` texts per call) to reduce the number of
@@ -33,6 +33,8 @@ class DocumentIngestionMixin:
 
         Parameters:
             texts (List[str]): List of strings with the texts to generate embeddings for.
+            prefix (str): Prepended to each text that isn't empty after cleaning — how
+                `embedding_query_prefix`/`embedding_document_prefix` are applied.
 
         Returns:
             np.ndarray: A numpy array with the embeddings generated for each text, in the
@@ -49,7 +51,7 @@ class DocumentIngestionMixin:
                     .decode('utf-8')
                     .strip()
             )
-            cleaned_texts.append(text_limpo[:constants.MAX_EMBEDDING_INPUT_CHARS])
+            cleaned_texts.append((prefix + text_limpo)[:constants.MAX_EMBEDDING_INPUT_CHARS] if text_limpo else "")
 
         embeddings: List[Optional[List[float]]] = [None] * len(cleaned_texts)
 
@@ -219,7 +221,7 @@ class DocumentIngestionMixin:
                         "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
                     })
 
-        embeddings = self.get_embeddings(all_texts)
+        embeddings = self.get_embeddings(all_texts, prefix=self.embedding_document_prefix)
         return embeddings, all_metadata
 
     def create_embeddings_chunks(self, docs: List[Tuple[str, str]], chunk_size: int = constants.DEFAULT_CHUNK_SIZE_WORDS) -> Tuple[np.ndarray, List]:
@@ -255,5 +257,5 @@ class DocumentIngestionMixin:
                         "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
                     })
 
-        embeddings = self.get_embeddings(all_texts)
+        embeddings = self.get_embeddings(all_texts, prefix=self.embedding_document_prefix)
         return embeddings, all_metadata

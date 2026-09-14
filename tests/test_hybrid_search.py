@@ -55,7 +55,7 @@ def test_hybrid_search_recovers_exact_term_missed_by_dense(make_index, monkeypat
     index = faiss.IndexFlatL2(2)
     index.add(embeddings)
     idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
-    monkeypatch.setattr(idx, "get_embeddings", lambda texts: np.array([[1.0, 0.0]], dtype="float32"))
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": np.array([[1.0, 0.0]], dtype="float32"))
 
     query = "0829366-83.2025.8.14.0301"
 

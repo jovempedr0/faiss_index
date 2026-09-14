@@ -354,7 +354,7 @@ comparison = idx.compare_strategies(
 )
 ```
 
-`generate_search` is the shortcut for this same flow, cleaning the query first (it
+`generate_search` is the shortcut for this same flow, searching the query as typed (it
 also takes `use_hybrid`, passed straight through to `compare_strategies`):
 
 ```python
@@ -442,7 +442,7 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True, embedding_query_prefix="", embedding_document_prefix="")`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
@@ -525,7 +525,8 @@ OpenAI-compatible path) — see
 
 - **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback).
 - **`extract_sections(text, document_type) -> Dict[str, str]`** — uses the calibrated schema.
-- **`get_embeddings(texts) -> np.ndarray`** — generates embeddings in batches.
+- **`get_embeddings(texts, prefix="") -> np.ndarray`** — generates embeddings in batches
+  (`prefix` is prepended to each non-empty text).
 - **`create_embeddings_full/sections/chunks(docs, ...) -> Tuple[np.ndarray, List]`**
 
 ## On-disk file layout
@@ -537,13 +538,19 @@ OpenAI-compatible path) — see
     <document_type>_full.index
     <document_type>_full_metadata.json
     <document_type>_full_embeddings.npy
+    <document_type>_full_embedding.json     # embedding_document_prefix used at build time
     <document_type>_sections.index          # if a schema was calibrated
     <document_type>_sections_metadata.json
     <document_type>_sections_embeddings.npy
+    <document_type>_sections_embedding.json
     <document_type>_chunks.index
     <document_type>_chunks_metadata.json
     <document_type>_chunks_embeddings.npy
+    <document_type>_chunks_embedding.json
 ```
+
+The `*_embedding.json` files are optional on load (indices saved before they existed
+are treated as built without a document prefix).
 
 `load_indices(path_indices=..., document_types=[...])` expects exactly this layout
 (one subfolder per `document_type` inside `path_indices`).
@@ -600,6 +607,24 @@ configurable on the constructor:
   through an OpenAI-compatible API — see `openai_key`) requires passing
   **`embedding_dim`** explicitly with that model's actual output dimension;
   otherwise `__init__` raises `ValueError`.
+
+- **`embedding_query_prefix` / `embedding_document_prefix`** — text prepended to
+  every search query / every indexed chunk or section before embedding. Many
+  retrieval embedding models are trained with asymmetric prefixes and search
+  noticeably better with them; OpenAI's `text-embedding-3-*` use none (the default
+  `""`). Check your model's card — for example:
+
+  | Model | `embedding_query_prefix` | `embedding_document_prefix` |
+  |---|---|---|
+  | `jina-embeddings-v5-text-*-retrieval` | `"Query: "` | `"Document: "` |
+  | `intfloat/multilingual-e5-*` | `"query: "` | `"passage: "` |
+
+  The document prefix is baked into the saved vectors: it's recorded next to each
+  index (`<document_type>_<strategy>_embedding.json`) and `load_indices` logs a
+  warning if the instance loading it uses a different one — changing it means
+  rebuilding. Queries are embedded as typed (only BM25, in hybrid search, lowercases
+  them and strips punctuation/stopwords), so negations like "não"/"sem" reach the
+  embedding model and the reranker intact.
 
 - **`section_extraction_model`** — used only by
   `register_document_type`/`_infer_section_schema_via_llm` to calibrate the

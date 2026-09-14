@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 class SearchMixin:
 
     def _tokenize_for_bm25(self, text: str) -> List[str]:
-        """Tokenizes text for BM25 indexing/querying — same normalization (lowercase,
-        punctuation stripped, PT stopwords removed) already used for embedding queries."""
+        """Tokenizes text for BM25 indexing/querying via clean_text (lowercase,
+        punctuation stripped, PT stopwords removed). Only the lexical side normalizes
+        like this — dense search and reranking receive the query unaltered."""
         return clean_text(text)[0].split()
 
     def _get_bm25_index(self, document_type: str, strategy: str) -> BM25Okapi:
@@ -71,7 +72,7 @@ class SearchMixin:
             return {}
 
         index, metadata, _embeddings = self.indices[document_type][strategy]
-        query_embedding = self.get_embeddings([query])
+        query_embedding = self.get_embeddings([query], prefix=self.embedding_query_prefix)
 
         start_time = time.time()
         valid_indices, valid_distances = self._dense_search_indices(index, query_embedding, k)
@@ -136,7 +137,7 @@ class SearchMixin:
 
         start_time = time.time()
 
-        query_embedding = self.get_embeddings([query])
+        query_embedding = self.get_embeddings([query], prefix=self.embedding_query_prefix)
         dense_indices, _dense_distances = self._dense_search_indices(index, query_embedding, pool)
 
         bm25 = self._get_bm25_index(document_type, strategy)
@@ -369,8 +370,8 @@ class SearchMixin:
             tuple: A tuple with the search results and the heuristic scores.
         """
 
-        cleaned_query = clean_text(received_query[0])
-        results = self.compare_strategies(cleaned_query, document_type, strategies_compare, k=20, use_hybrid=use_hybrid)
+        # Searched as-is, not clean_text'ed — see generate_search_by_type.
+        results = self.compare_strategies([received_query[0]], document_type, strategies_compare, k=20, use_hybrid=use_hybrid)
         scores = self.calculate_heuristic_score(results, keywords)
 
         return results, scores
@@ -418,16 +419,20 @@ class SearchMixin:
         # clean_text always returns a 1-element list ([text.strip()]), even when the
         # text becomes empty after cleaning — so the emptiness has to be checked on
         # the string itself, not on the (always truthy) wrapping list.
-        cleaned_query_str = clean_text(received_query)[0]
-        if not cleaned_query_str:
+        if not clean_text(received_query)[0]:
             return []
 
+        # The query itself is searched as-is: embedding and cross-encoder models read
+        # natural language (documents are embedded unaltered too), and clean_text's
+        # stopword removal drops words like "não"/"sem" that invert a query's meaning.
+        # Only the BM25 side normalizes it, inside _tokenize_for_bm25.
+        query = received_query.strip()
         evaluate = self.evaluate_strategy_hybrid if use_hybrid else self.evaluate_strategy
         retrieval_k = max(k * 4, 20) if rerank else k
-        results = evaluate(cleaned_query_str, document_type, strategy, k=retrieval_k)
+        results = evaluate(query, document_type, strategy, k=retrieval_k)
         result_items = results.get('results', [])
 
         if rerank:
-            result_items = self.rerank_results(cleaned_query_str, result_items, k=k)
+            result_items = self.rerank_results(query, result_items, k=k)
 
         return [self._extract_metadata_text(res['metadata']) for res in result_items]

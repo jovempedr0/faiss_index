@@ -1,7 +1,8 @@
 """
-Text normalization shared by FaissDocumentIndex's embedding queries and BM25
-tokenizing (`_search.py`'s `_tokenize_for_bm25`/`generate_search`/
-`generate_search_by_type`). Kept as plain functions in their own module (not methods
+Text normalization used by FaissDocumentIndex's BM25 tokenizing (`_search.py`'s
+`_tokenize_for_bm25`) and by `generate_search_by_type`'s empty-query check — not for
+the text sent to embedding/rerank models, which read natural language (stopword
+removal would drop words like "não"). Kept as plain functions in their own module (not methods
 on the class) so `_search.py` can import them without a circular import back into
 `core.py`.
 """

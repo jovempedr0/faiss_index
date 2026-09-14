@@ -77,7 +77,9 @@ class FaissDocumentIndex(
                  ivf_nprobe: int = config.DEFAULT_IVF_NPROBE,
                  pq_m: int = config.DEFAULT_PQ_M,
                  pq_nbits: int = config.DEFAULT_PQ_NBITS,
-                 use_mps: bool = config.DEFAULT_USE_MPS):
+                 use_mps: bool = config.DEFAULT_USE_MPS,
+                 embedding_query_prefix: str = "",
+                 embedding_document_prefix: str = ""):
         """
         Parameters:
             base_path (str): Base path where the documents are stored.
@@ -142,6 +144,16 @@ class FaissDocumentIndex(
                 Apple Silicon macOS, or without `torch` installed — falls back to FAISS CPU
                 normally. Independent of `use_gpu` in `load_indices`/`_move_index_to_gpu`,
                 which is the CUDA GPU path (faiss-gpu), nonexistent on macOS.
+            embedding_query_prefix (str): Prepended to every search query before it's
+                embedded. Defaults to "" (none).
+            embedding_document_prefix (str): Prepended to every indexed text (chunk,
+                section) before it's embedded. Defaults to "" (none). Some retrieval
+                embedding models are trained with asymmetric prefixes and search better
+                with them — e.g. jina-embeddings-v5 retrieval: "Query: "/"Document: ";
+                E5: "query: "/"passage: "; OpenAI's text-embedding-3 models use none.
+                The document prefix an index was built with is saved alongside it, and
+                `load_indices` warns when it differs from this instance's — changing it
+                means rebuilding the indices.
 
         Returns:
             None
@@ -155,6 +167,8 @@ class FaissDocumentIndex(
         # the first time evaluate_strategy_hybrid is called for that combination.
         self._bm25_indices: Dict[str, Dict[str, BM25Okapi]] = {}
         self.embedding_batch_size = embedding_batch_size
+        self.embedding_query_prefix = embedding_query_prefix
+        self.embedding_document_prefix = embedding_document_prefix
         self.index_type = index_type
         self.auto_index_thresholds = auto_index_thresholds
         self.ivf_nlist = ivf_nlist

@@ -80,7 +80,7 @@ def test_generate_search_by_type_use_hybrid_recovers_exact_term(make_index, monk
     index = faiss.IndexFlatL2(2)
     index.add(embeddings)
     idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
-    monkeypatch.setattr(idx, "get_embeddings", lambda texts: np.array([[1.0, 0.0]], dtype="float32"))
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": np.array([[1.0, 0.0]], dtype="float32"))
 
     dense_only = idx.generate_search_by_type(
         "0829366-83.2025.8.14.0301", "doctype", "chunks", require_gpu=False, k=2, use_hybrid=False
@@ -107,6 +107,40 @@ def test_generate_search_by_type_rerank_narrows_to_k(make_index, fake_rerank_pro
     )
 
     assert chunks == ["texto muito relevante", "texto medio"]
+
+
+def test_generate_search_by_type_sends_the_unaltered_query_to_embeddings_and_reranker(
+    make_index, fake_rerank_provider, monkeypatch
+):
+    # Regression test: the shortcut clean_text'ed the query before searching, so the
+    # embedding model and the cross-encoder got "clausula permite rescisao" for
+    # "Cláusula que NÃO permite rescisão?" — punctuation, case and stopwords like
+    # "não"/"sem" (which invert meaning) stripped, while documents are embedded as-is.
+    idx = make_index(embedding_dim=4, rerank_provider=fake_rerank_provider)
+    _build_chunks_index(idx, ["texto um", "texto dois", "texto tres"])
+    embedded_texts = []
+    real_get_embeddings = idx.get_embeddings
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": embedded_texts.extend(texts) or real_get_embeddings(texts, prefix))
+    query = "Cláusula que NÃO permite rescisão?"
+
+    idx.generate_search_by_type(query, "doctype", "chunks", require_gpu=False, k=2, use_hybrid=True, rerank=True)
+
+    assert embedded_texts == [query]
+    assert fake_rerank_provider.calls[0][0] == query
+
+
+def test_generate_search_sends_the_unaltered_query_to_embeddings(make_index, monkeypatch):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois"])
+    embedded_texts = []
+    real_get_embeddings = idx.get_embeddings
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": embedded_texts.extend(texts) or real_get_embeddings(texts, prefix))
+    query = "Decisão sem efeito suspensivo?"
+
+    results, _scores = idx.generate_search([query], keywords=[], document_type="doctype", strategies_compare=["chunks"])
+
+    assert embedded_texts == [query]
+    assert list(results) == [query]
 
 
 def test_generate_search_by_type_empty_query_returns_empty_list(make_index):

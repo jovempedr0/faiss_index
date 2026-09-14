@@ -84,6 +84,56 @@ def test_build_indices_embeds_chunks_once_and_pools_full_from_them(
     assert full_index.ntotal == 2
 
 
+def _build_txt_corpus(idx, fake_chat_provider, tmp_path, texts):
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True, exist_ok=True)
+    for i, text in enumerate(texts):
+        (data_dir / "doctype" / f"doc{i}.txt").write_text(text, encoding="utf-8")
+    fake_chat_provider.responses.append({"sections": [{"name": "corpo", "patterns": ["corpo"]}]})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+    return tmp_path / "out"
+
+
+def test_embedding_prefixes_apply_to_indexed_texts_and_queries(
+    make_index, fake_embedding_provider, fake_chat_provider, tmp_path, monkeypatch
+):
+    embedded = []
+    real_embed = fake_embedding_provider.embed
+    monkeypatch.setattr(fake_embedding_provider, "embed", lambda texts: embedded.extend(texts) or real_embed(texts))
+    idx = make_index(embedding_dim=8, embedding_query_prefix="Query: ", embedding_document_prefix="Document: ")
+
+    _build_txt_corpus(idx, fake_chat_provider, tmp_path, ["Cabecalho\ncorpo sobre contratos", "Cabecalho\ncorpo sobre pagamentos"])
+    indexed = list(embedded)
+    embedded.clear()
+    idx.generate_search_by_type("Contratos sem multa?", "doctype", "chunks", require_gpu=False, k=1, use_hybrid=True)
+    idx.evaluate_strategy("pagamentos", "doctype", "sections", k=1)
+
+    assert indexed and all(text.startswith("Document: ") for text in indexed)
+    assert embedded == ["Query: Contratos sem multa?", "Query: pagamentos"]
+
+
+def test_load_indices_warns_when_saved_document_prefix_differs(make_index, fake_chat_provider, tmp_path, caplog):
+    out = _build_txt_corpus(
+        make_index(embedding_dim=8, embedding_document_prefix="passage: "), fake_chat_provider, tmp_path, ["corpo do documento"]
+    )
+    assert (out / "doctype" / "doctype_chunks_embedding.json").exists()
+
+    with caplog.at_level("WARNING", logger="faiss_index._lifecycle"):
+        make_index(embedding_dim=8, embedding_document_prefix="passage: ").load_indices(str(out), ["doctype"], ["chunks"], use_gpu=False)
+    assert "embedding_document_prefix" not in caplog.text
+
+    with caplog.at_level("WARNING", logger="faiss_index._lifecycle"):
+        make_index(embedding_dim=8).load_indices(str(out), ["doctype"], ["chunks"], use_gpu=False)
+    assert "embedding_document_prefix='passage: '" in caplog.text
+
+    # An index saved before prefixes existed (no embedding.json) was built without one.
+    (out / "doctype" / "doctype_chunks_embedding.json").unlink()
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="faiss_index._lifecycle"):
+        make_index(embedding_dim=8, embedding_document_prefix="Document: ").load_indices(str(out), ["doctype"], ["chunks"], use_gpu=False)
+    assert "embedding_document_prefix=''" in caplog.text
+
+
 def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
     # Regression test: build_indices filtered files with a case-sensitive
     # `p.suffix in SUPPORTED_FILE_EXTENSIONS`, so "DOC2.TXT" (or a scanned "X.PDF")

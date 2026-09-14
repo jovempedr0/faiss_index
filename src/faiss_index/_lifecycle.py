@@ -104,6 +104,8 @@ class IndexLifecycleMixin:
         with open(output_dir / f"{document_type}_{strategy_name}_metadata.json", "w", encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=4)
         np.save(output_dir / f"{document_type}_{strategy_name}_embeddings.npy", embeddings)
+        with open(output_dir / f"{document_type}_{strategy_name}_embedding.json", "w", encoding='utf-8') as f:
+            json.dump({"document_prefix": self.embedding_document_prefix}, f, ensure_ascii=False, indent=4)
 
         logger.info(_("Index for '%(strategy_name)s' saved successfully.") % {"strategy_name": strategy_name})
         return index, metadata, embeddings
@@ -300,6 +302,7 @@ class IndexLifecycleMixin:
             self._log_memory_usage(_("After loading metadata '%(strategy)s'") % {"strategy": strategy})
 
             embeddings = np.load(embeddings_path, mmap_mode="r")
+            self._warn_if_document_prefix_differs(document_dir, document_type, strategy)
 
             loaded_tuple = (final_index, metadata, embeddings)
             self.indices[document_type][strategy] = loaded_tuple
@@ -326,6 +329,25 @@ class IndexLifecycleMixin:
             )
         finally:
             gc.collect()
+
+    def _warn_if_document_prefix_differs(self, document_dir, document_type, strategy):
+        """
+        Warns when a strategy's saved vectors were embedded with a different
+        `embedding_document_prefix` than this instance uses (queries and newly added
+        documents would then be embedded inconsistently with them).
+        """
+        config_path = os.path.join(document_dir, f"{document_type}_{strategy}_embedding.json")
+        built_with = ""  # indices saved before this file existed were embedded without a prefix
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                built_with = json.load(f).get("document_prefix", "")
+        if built_with != self.embedding_document_prefix:
+            logger.warning(
+                _("   Index '%(document_type)s/%(strategy)s' was built with embedding_document_prefix=%(built_with)r, "
+                  "but this instance uses %(current)r: its vectors won't be consistent with this instance's "
+                  "embeddings. Rebuild the index, or construct the instance with the prefixes it was built with.")
+                % {"document_type": document_type, "strategy": strategy, "built_with": built_with, "current": self.embedding_document_prefix}
+            )
 
     def unload_indices(self, document_type: str, strategy: str = None) -> None:
         """

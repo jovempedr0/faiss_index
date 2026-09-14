@@ -94,6 +94,15 @@ def test_create_embeddings_full_document_without_words_gets_zero_vector(make_ind
     assert [m["file"] for m in metadata] == ["vazio.txt", "doc.txt"]
 
 
+def test_get_embeddings_prefix_is_prepended_to_non_empty_texts_only(make_index):
+    idx = make_index(embedding_dim=4)
+
+    prefixed = idx.get_embeddings(["texto real", "   "], prefix="Query: ")
+
+    assert np.array_equal(prefixed[0], idx.get_embeddings(["Query: texto real"])[0])
+    assert np.array_equal(prefixed[1], np.zeros(4))  # still empty -> still a zero vector
+
+
 def test_get_embeddings_truncates_long_input(make_index):
     idx = make_index(embedding_dim=4)
     from faiss_index import constants
