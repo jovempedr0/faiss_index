@@ -139,3 +139,48 @@ def test_docling_structure_provider_returns_empty_when_ocr_fallback_also_fails(m
     )
 
     assert provider.extract_sections("qualquer.pdf") == {}
+
+
+def test_docling_structure_provider_splits_sections_by_heading():
+    # Covers extract_sections's main path (real, non-corrupted text): items are
+    # grouped under whichever heading-labeled item ("section_header"/"title") most
+    # recently preceded them, with everything before the first heading going to
+    # "cabecalho" and blank/whitespace-only items skipped entirely.
+    provider = DoclingStructureProvider.__new__(DoclingStructureProvider)
+
+    class FakeItem:
+        def __init__(self, text, label):
+            self.text = text
+            self.label = label
+
+    items = [
+        (FakeItem("Texto introdutório antes de qualquer título.", "text"), 0),
+        (FakeItem("Cláusula 1 - Objeto", "section_header"), 1),
+        (FakeItem("Descrição do objeto do contrato.", "text"), 2),
+        (FakeItem("   ", "text"), 2),
+        (FakeItem("Cláusula 2 - Pagamento", "section_header"), 1),
+        (FakeItem("Condições de pagamento aqui descritas.", "text"), 2),
+    ]
+    full_text = "\n".join(item.text for item, _level in items)
+
+    class FakeDoc:
+        def export_to_text(self):
+            return full_text
+
+        def iterate_items(self):
+            return items
+
+    class FakeConverter:
+        def convert(self, file_path):
+            return type("Result", (), {"document": FakeDoc()})()
+
+    provider._converter = FakeConverter()
+
+    sections = provider.extract_sections("qualquer.pdf")
+
+    assert sections == {
+        "completo": full_text,
+        "cabecalho": "Texto introdutório antes de qualquer título.",
+        "cláusula_1_-_objeto": "Descrição do objeto do contrato.",
+        "cláusula_2_-_pagamento": "Condições de pagamento aqui descritas.",
+    }
