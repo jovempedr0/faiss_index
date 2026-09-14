@@ -325,10 +325,45 @@ the same way as `embedding_provider`/`chat_provider` — see
 
 ### Comparing strategies and picking the best one
 
-`evaluate_strategy` searches on a single strategy; `compare_strategies` +
-`calculate_heuristic_score` run several queries × strategies and score each one
-(speed, distance, variance, file diversity, and optionally `keywords`) to help
-decide which strategy to use in production:
+Pick a strategy (and dense vs. hybrid, rerank, embedding prefixes...) by measuring
+it on your own documents: write down some queries a user would actually type, with
+the file(s) — and ideally a passage — that answer each, and run
+`evaluate_retrieval`:
+
+```python
+labeled_queries = [
+    {
+        "query": "Which clause allows early termination without penalty?",
+        "relevant_files": ["./data/contract/2025-03/acme.pdf"],   # as stored in metadata["file"]
+        "relevant_text": "may terminate this agreement at any time without penalty",  # optional
+    },
+    # ... a few dozen of these go a long way
+]
+report = idx.evaluate_retrieval(
+    labeled_queries, document_type="contract", strategies=["full", "sections", "chunks"],
+    k=5, use_hybrid=True,
+)
+# {"chunks": {"recall_at_k": 0.98, "mrr": 0.81, "passage_recall_at_k": 0.86,
+#             "avg_result_chars": 3417.0, "n_queries": 57}, ...}
+```
+
+`recall_at_k`/`mrr` look at whether the right *file* comes back; `passage_recall_at_k`
+at whether the returned text actually contains the answer; `avg_result_chars` at how
+much text you'd hand to an LLM to get it. Read them together: `full` finds the right
+file easily by returning whole documents (on a real 23-document legal corpus: 89% file
+recall at ~146k characters per result, vs. 98% for `chunks` at ~3.4k). Reranking is
+also meant for short texts — cross-encoders only read the beginning of a long input,
+so on that corpus `rerank=True` dropped `full` to 32% and `sections` to 56% while
+`chunks` stayed at 98%. Writing the labeled queries by hand is the most reliable;
+having an LLM write one question per sampled chunk (keeping the chunk as
+`relevant_text`) is a quick way to get started.
+
+`compare_strategies` runs several queries × strategies and returns the raw results.
+The older way to score them, `calculate_heuristic_score` (and `generate_search`,
+which calls it), is **deprecated**: it combines speed, distance, variance, file
+diversity and keyword presence, none of which measures relevance, and it structurally
+favors `full` (every `full` result is a different file, so its diversity is always
+1.0) — on the corpus above it ranked `full` > `sections` > `chunks`:
 
 ```python
 comparison = idx.compare_strategies(
@@ -337,13 +372,12 @@ comparison = idx.compare_strategies(
     strategies_compare=["full", "sections", "chunks"],
     k=15,
 )
-scores = idx.calculate_heuristic_score(comparison, keywords=["termination", "penalty"])
-best_strategy = max(scores, key=lambda s: scores[s]["mean_score"])
+scores = idx.calculate_heuristic_score(comparison, keywords=["termination", "penalty"])  # DeprecationWarning
 ```
 
-`use_hybrid=True` evaluates each strategy with `evaluate_strategy_hybrid` instead —
-`calculate_heuristic_score` adapts its scoring automatically (there's no `avg_distance`
-to work with there, so it uses the RRF scores' mean/spread instead):
+`use_hybrid=True` evaluates each strategy with `evaluate_strategy_hybrid` instead
+(`calculate_heuristic_score` then uses the RRF scores' mean/spread, since there's no
+`avg_distance`):
 
 ```python
 comparison = idx.compare_strategies(
@@ -354,8 +388,9 @@ comparison = idx.compare_strategies(
 )
 ```
 
-`generate_search` is the shortcut for this same flow, searching the query as typed (it
-also takes `use_hybrid`, passed straight through to `compare_strategies`):
+`generate_search` (also deprecated) is the shortcut for this same flow, searching the
+query as typed (it also takes `use_hybrid`, passed straight through to
+`compare_strategies`):
 
 ```python
 results, scores = idx.generate_search(
@@ -488,14 +523,20 @@ OpenAI-compatible path) — see
   Runs `evaluate_strategy` (or `evaluate_strategy_hybrid`, if `use_hybrid=True`) for
   several queries × strategies, for comparison.
 
-- **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`**
-  Scores each strategy (speed, distance/RRF score, variance, file diversity, and,
-  optionally, presence of `keywords`) to help pick which strategy to use — works with
-  results from either `evaluate_strategy` or `evaluate_strategy_hybrid`.
+- **`evaluate_retrieval(labeled_queries, document_type, strategies, k=5, use_hybrid=False, rerank=False) -> Dict`**
+  Measures each strategy against queries with known answers (`{"query",
+  "relevant_files", "relevant_text"?}`): `recall_at_k`, `mrr`, `passage_recall_at_k`
+  and `avg_result_chars`. The way to pick a strategy — see
+  [Comparing strategies](#comparing-strategies-and-picking-the-best-one).
 
-- **`generate_search(received_query, keywords, document_type, strategies_compare, use_hybrid=False) -> Tuple[Dict, Dict]`**
-  Shortcut: cleans the query, compares strategies, and computes the heuristic
-  scores.
+- **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`** — *deprecated*
+  Scores each strategy (speed, distance/RRF score, variance, file diversity, and,
+  optionally, presence of `keywords`). Doesn't measure relevance and favors `full`;
+  emits a `DeprecationWarning`. Use `evaluate_retrieval`.
+
+- **`generate_search(received_query, keywords, document_type, strategies_compare, use_hybrid=False) -> Tuple[Dict, Dict]`** — *deprecated*
+  Shortcut: compares strategies for the query and computes the heuristic scores.
+  Emits a `DeprecationWarning`, like `calculate_heuristic_score`.
 
 - **`generate_search_by_type(received_query, document_type, strategy, require_gpu, k=5, use_hybrid=False, rerank=False) -> List[str]`**
   High-level shortcut: loads the index if it's not already in memory, searches

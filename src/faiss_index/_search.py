@@ -6,6 +6,7 @@ Rank Fusion) search, reranking, strategy comparison/scoring, and the high-level
 """
 import logging
 import time
+import warnings
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
@@ -268,9 +269,71 @@ class SearchMixin:
 
         return comparisons
 
+    def evaluate_retrieval(
+        self, labeled_queries: List[Dict], document_type: str, strategies: List[str],
+        k: int = 5, use_hybrid: bool = False, rerank: bool = False
+    ) -> Dict[str, Dict]:
+        """
+        Measures retrieval quality per strategy against queries whose right answers are
+        known — the way to pick a strategy (or to compare dense/hybrid/rerank, embedding
+        prefixes, models...) on your own documents.
+
+        Parameters:
+            labeled_queries (List[Dict]): One dict per query, with:
+                - "query" (str): the query, as a user would type it.
+                - "relevant_files" (List[str]): the file paths (as stored in
+                  `metadata["file"]`) that answer it.
+                - "relevant_text" (str, optional): a passage that answers it. A query is
+                  a passage hit when some returned text contains this passage (compared
+                  with whitespace normalized).
+            document_type (str): Document type whose (already loaded) indices are searched.
+            strategies (List[str]): Strategies to evaluate (e.g.: ["full", "sections", "chunks"]).
+            k (int): Results retrieved per query. Defaults to 5.
+            use_hybrid (bool), rerank (bool): Same retrieval options as `generate_search_by_type`.
+
+        Returns:
+            Dict[str, Dict]: For each strategy:
+                - "recall_at_k": fraction of queries with a relevant file in the top `k`.
+                - "mrr": mean reciprocal rank of the first relevant file (0 when absent).
+                - "passage_recall_at_k": fraction of the queries that have "relevant_text"
+                  whose passage is contained in a returned text; None if none has one.
+                - "avg_result_chars": mean length of the returned texts — what the
+                  strategy costs as LLM context ("full" finds the right file easily
+                  precisely by returning whole documents).
+                - "n_queries": number of queries evaluated.
+        """
+        normalize = lambda text: " ".join(text.split())
+        report = {}
+        for strategy in strategies:
+            reciprocal_ranks, result_chars, passage_queries, passage_hits = [], [], 0, 0
+            for labeled in labeled_queries:
+                items = self._retrieve(labeled["query"], document_type, strategy, k, use_hybrid, rerank)
+                texts = [self._extract_metadata_text(item["metadata"]) for item in items]
+                relevant_files = set(labeled["relevant_files"])
+                first_rank = next((rank for rank, item in enumerate(items, start=1) if item["metadata"]["file"] in relevant_files), None)
+                reciprocal_ranks.append(1.0 / first_rank if first_rank else 0.0)
+                result_chars.extend(len(text) for text in texts)
+                if labeled.get("relevant_text"):
+                    passage_queries += 1
+                    passage = normalize(labeled["relevant_text"])
+                    passage_hits += any(passage in normalize(text) for text in texts)
+            report[strategy] = {
+                "recall_at_k": float(np.mean([rr > 0 for rr in reciprocal_ranks])) if reciprocal_ranks else 0.0,
+                "mrr": float(np.mean(reciprocal_ranks)) if reciprocal_ranks else 0.0,
+                "passage_recall_at_k": passage_hits / passage_queries if passage_queries else None,
+                "avg_result_chars": float(np.mean(result_chars)) if result_chars else 0.0,
+                "n_queries": len(labeled_queries),
+            }
+        return report
+
     def calculate_heuristic_score(self, comparison_results: Dict, keywords: Optional[List[str]] = None) -> Dict:
         """
         Computes a heuristic score to compare the search strategies based on multiple criteria.
+
+        Deprecated: the score (speed, distance, variance, file diversity, keyword presence)
+        doesn't measure relevance, and it structurally favors "full" — every "full" result
+        is a different file (diversity is always 1.0) and whole documents contain keywords
+        far more often. Use `evaluate_retrieval` with labeled queries instead.
 
         Parameters:
             comparison_results (Dict): Comparison results between strategies, from `compare_strategies`.
@@ -280,6 +343,15 @@ class SearchMixin:
             Dict: A dictionary with the mean score and standard deviation for each strategy,
                 considering the defined criteria.
         """
+        warnings.warn(
+            "calculate_heuristic_score is deprecated: its score doesn't measure relevance and structurally "
+            "favors the 'full' strategy. Use evaluate_retrieval with labeled queries instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return self._heuristic_scores(comparison_results, keywords)
+
+    def _heuristic_scores(self, comparison_results: Dict, keywords: Optional[List[str]]) -> Dict:
+        """`calculate_heuristic_score` without the deprecation warning (also used by `generate_search`)."""
         scores: Dict[str, List[float]] = defaultdict(list)
 
         for query, strategies in comparison_results.items():
@@ -368,11 +440,18 @@ class SearchMixin:
 
         Returns:
             tuple: A tuple with the search results and the heuristic scores.
-        """
 
+        Deprecated: the scores come from `calculate_heuristic_score` — see why there.
+        Use `evaluate_retrieval` with labeled queries to compare strategies.
+        """
+        warnings.warn(
+            "generate_search is deprecated: its scores come from calculate_heuristic_score, which "
+            "doesn't measure relevance. Use evaluate_retrieval with labeled queries to compare strategies.",
+            DeprecationWarning, stacklevel=2,
+        )
         # Searched as-is, not clean_text'ed — see generate_search_by_type.
         results = self.compare_strategies([received_query[0]], document_type, strategies_compare, k=20, use_hybrid=use_hybrid)
-        scores = self.calculate_heuristic_score(results, keywords)
+        scores = self._heuristic_scores(results, keywords)
 
         return results, scores
 
@@ -426,13 +505,18 @@ class SearchMixin:
         # natural language (documents are embedded unaltered too), and clean_text's
         # stopword removal drops words like "não"/"sem" that invert a query's meaning.
         # Only the BM25 side normalizes it, inside _tokenize_for_bm25.
-        query = received_query.strip()
+        result_items = self._retrieve(received_query.strip(), document_type, strategy, k, use_hybrid, rerank)
+        return [self._extract_metadata_text(res['metadata']) for res in result_items]
+
+    def _retrieve(self, query: str, document_type: str, strategy: str, k: int, use_hybrid: bool, rerank: bool) -> List[Dict]:
+        """
+        Retrieval path shared by `generate_search_by_type` and `evaluate_retrieval`:
+        dense or hybrid search for `k` results — or, with `rerank`, a larger candidate
+        pool (`max(k * 4, 20)`) narrowed down to `k` via `rerank_results`.
+        """
         evaluate = self.evaluate_strategy_hybrid if use_hybrid else self.evaluate_strategy
         retrieval_k = max(k * 4, 20) if rerank else k
-        results = evaluate(query, document_type, strategy, k=retrieval_k)
-        result_items = results.get('results', [])
-
+        result_items = evaluate(query, document_type, strategy, k=retrieval_k).get('results', [])
         if rerank:
             result_items = self.rerank_results(query, result_items, k=k)
-
-        return [self._extract_metadata_text(res['metadata']) for res in result_items]
+        return result_items

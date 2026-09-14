@@ -1,5 +1,6 @@
 import numpy as np
 import faiss
+import pytest
 
 from faiss_index import config
 
@@ -21,7 +22,8 @@ def test_calculate_heuristic_score_handles_dense_results(make_index):
     _build_chunks_index(idx, ["primeiro texto", "segundo texto", "terceiro texto"])
     dense_results = idx.evaluate_strategy("um texto qualquer", "doctype", "chunks", k=3)
 
-    scores = idx.calculate_heuristic_score({"query": {"chunks": dense_results}})
+    with pytest.deprecated_call():
+        scores = idx.calculate_heuristic_score({"query": {"chunks": dense_results}})
 
     assert "chunks" in scores
     assert scores["chunks"]["mean_score"] >= 0
@@ -34,10 +36,54 @@ def test_calculate_heuristic_score_handles_hybrid_results_without_keyerror(make_
 
     # Before the fix, this raised KeyError: 'avg_distance' (evaluate_strategy_hybrid's
     # results don't have it — only per-item "rrf_score").
-    scores = idx.calculate_heuristic_score({"query": {"chunks": hybrid_results}})
+    with pytest.deprecated_call():
+        scores = idx.calculate_heuristic_score({"query": {"chunks": hybrid_results}})
 
     assert "chunks" in scores
     assert scores["chunks"]["mean_score"] >= 0
+
+
+def test_evaluate_retrieval_reports_recall_mrr_passage_recall_and_result_size(make_index, monkeypatch):
+    idx = make_index(embedding_dim=2)
+    metadata = [
+        {"file": "a.txt", "type": "chunk", "chunk_text": "clausula de rescisao sem multa"},
+        {"file": "b.txt", "type": "chunk", "chunk_text": "pagamento  em\nduas parcelas"},
+        {"file": "c.txt", "type": "chunk", "chunk_text": "foro da comarca"},
+    ]
+    embeddings = np.array([[0.0, 1.0], [2.0, 0.0], [5.0, 5.0]], dtype="float32")
+    index = faiss.IndexFlatL2(2)
+    index.add(embeddings)
+    idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
+    query_vectors = {"rescisao": [0.0, 1.0], "parcelas": [0.1, 1.0], "inexistente": [5.0, 5.0]}
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": np.array([query_vectors[texts[0]]], dtype="float32"))
+
+    report = idx.evaluate_retrieval(
+        [
+            {"query": "rescisao", "relevant_files": ["a.txt"], "relevant_text": "rescisao sem multa"},  # rank 1
+            {"query": "parcelas", "relevant_files": ["b.txt"], "relevant_text": "em duas parcelas"},    # rank 2
+            {"query": "inexistente", "relevant_files": ["zzz.txt"]},                                   # miss
+        ],
+        document_type="doctype", strategies=["chunks"], k=2,
+    )
+
+    chunks = report["chunks"]
+    assert chunks["recall_at_k"] == pytest.approx(2 / 3)
+    assert chunks["mrr"] == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+    assert chunks["passage_recall_at_k"] == 1.0  # b.txt's passage matched with whitespace normalized
+    assert chunks["n_queries"] == 3
+    a, b, c = (len(m["chunk_text"]) for m in metadata)
+    assert chunks["avg_result_chars"] == pytest.approx(np.mean([a, b, a, b, c, b]))  # top-2: (a,b) (a,b) (c,b)
+
+
+def test_calculate_heuristic_score_and_generate_search_are_deprecated(make_index):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["primeiro texto", "segundo texto"])
+    comparison = idx.compare_strategies(["texto"], "doctype", ["chunks"], k=2)
+
+    with pytest.deprecated_call():
+        idx.calculate_heuristic_score(comparison)
+    with pytest.deprecated_call():
+        idx.generate_search(["texto"], keywords=[], document_type="doctype", strategies_compare=["chunks"])
 
 
 def test_compare_strategies_dense_by_default(make_index):
@@ -137,7 +183,8 @@ def test_generate_search_sends_the_unaltered_query_to_embeddings(make_index, mon
     monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": embedded_texts.extend(texts) or real_get_embeddings(texts, prefix))
     query = "Decisão sem efeito suspensivo?"
 
-    results, _scores = idx.generate_search([query], keywords=[], document_type="doctype", strategies_compare=["chunks"])
+    with pytest.deprecated_call():
+        results, _scores = idx.generate_search([query], keywords=[], document_type="doctype", strategies_compare=["chunks"])
 
     assert embedded_texts == [query]
     assert list(results) == [query]
