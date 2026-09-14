@@ -1,4 +1,5 @@
 import threading
+import time
 
 from faiss_index import utils_ocr
 
@@ -152,6 +153,41 @@ def test_run_ocr_on_images_runs_tasks_concurrently(monkeypatch):
     result = utils_ocr.run_ocr_on_images(images, max_workers=n)
 
     assert result == {i: f"text-{i}" for i in range(n)}
+
+
+# --- _get_vlm_provider --------------------------------------------------------
+
+def test_get_vlm_provider_initializes_only_once_under_concurrent_access(monkeypatch):
+    # Regression test: _get_vlm_provider's lazy init used to be a plain
+    # "if _vlm_provider is None: _vlm_provider = ...", with no lock — since
+    # run_ocr_on_images now genuinely runs OCR concurrently (see the fix above), several
+    # threads calling this at once could each see None and construct their own
+    # provider (each opening its own HTTP client) before any of them assigned it back.
+    # The sleep here widens that race window so the bug reproduces reliably.
+    utils_ocr._vlm_provider = None
+    construction_count = 0
+    count_lock = threading.Lock()
+
+    class FakeProvider:
+        def __init__(self, model, vision_model):
+            nonlocal construction_count
+            time.sleep(0.05)
+            with count_lock:
+                construction_count += 1
+
+    monkeypatch.setattr(utils_ocr, "OpenAICompatibleChatProvider", FakeProvider)
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", "fake-vlm-model")
+
+    threads = [threading.Thread(target=utils_ocr._get_vlm_provider) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert construction_count == 1
+    assert isinstance(utils_ocr._vlm_provider, FakeProvider)
+
+    utils_ocr._vlm_provider = None  # don't leak state into other tests
 
 
 # --- process_problematic_pages (orchestration, real merge_ocr_results) -------

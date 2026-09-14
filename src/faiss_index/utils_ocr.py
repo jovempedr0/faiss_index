@@ -3,6 +3,7 @@ import re
 import logging
 import pdfplumber
 import tempfile
+import threading
 import pytesseract
 import warnings
 from io import BytesIO
@@ -28,6 +29,11 @@ logger = logging.getLogger(__name__)
 _VLM_DETECTION_TAG_RE = re.compile(r'<\|det\|>.*?<\|/det\|>([^<]*)')
 
 _vlm_provider: VisionProvider = None
+# Guards _vlm_provider's lazy init below: run_ocr_on_images processes pages
+# concurrently via a ThreadPoolExecutor, so without this lock, several threads could
+# each see _vlm_provider as still None and construct their own OpenAICompatibleChatProvider
+# (each opening its own HTTP client) before any of them got to assign it back.
+_vlm_provider_lock = threading.Lock()
 
 
 def set_vlm_provider(provider: VisionProvider) -> None:
@@ -38,13 +44,16 @@ def set_vlm_provider(provider: VisionProvider) -> None:
     (and OPENAI_API_KEY/OPENAI_BASE_URL from the environment).
     """
     global _vlm_provider
-    _vlm_provider = provider
+    with _vlm_provider_lock:
+        _vlm_provider = provider
 
 
 def _get_vlm_provider() -> VisionProvider:
     global _vlm_provider
     if _vlm_provider is None:
-        _vlm_provider = OpenAICompatibleChatProvider(model=config.OCR_VLM_MODEL, vision_model=config.OCR_VLM_MODEL)
+        with _vlm_provider_lock:
+            if _vlm_provider is None:  # re-check: another thread may have won the race
+                _vlm_provider = OpenAICompatibleChatProvider(model=config.OCR_VLM_MODEL, vision_model=config.OCR_VLM_MODEL)
     return _vlm_provider
 
 
