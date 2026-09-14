@@ -9,7 +9,7 @@ import os
 import logging
 
 import nltk
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from .constants import STOPWORDS_LANGUAGE
 from .i18n import _
@@ -17,14 +17,17 @@ from .i18n import _
 logger = logging.getLogger(__name__)
 
 # --- .env -------------------------------------------------------------------------
-# FAISS_INDEX_DOTENV_PATH lets you point to a specific .env; if absent, load_dotenv()
-# looks for a .env starting from the current directory and walking up the tree,
-# without assuming any specific project's directory depth.
+# FAISS_INDEX_DOTENV_PATH lets you point to a specific .env; if absent, we look for a
+# .env starting from the current directory and walking up the tree, without assuming
+# any specific project's directory depth. usecwd=True matters: by default find_dotenv
+# starts from the directory of the module that calls it — this file, i.e. wherever the
+# package is installed — so an application's own .env was never found (and running
+# from a source checkout loaded this library repo's .env instead).
 _dotenv_path = os.environ.get('FAISS_INDEX_DOTENV_PATH')
 if _dotenv_path:
     load_dotenv(dotenv_path=_dotenv_path)
 else:
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
 
 # --- NLTK data ------------------------------------------------------------------
 # NLTK_DATA_PATH lets you point to a specific NLTK data directory. If absent, we just
