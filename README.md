@@ -110,6 +110,46 @@ If the LLM can't identify any section (a document with no recognizable structure
 the `sections` strategy is simply skipped for that type — `full` and `chunks` keep
 working normally.
 
+#### Alternative: structure-aware extraction via Docling
+
+Pattern matching (above) works on already-flattened text, so it can't see real
+document structure — heading hierarchy, tables, layout. For that, pass a
+`structure_provider` on the constructor instead: `sections` is then built from each
+document's *actual* structure, with no schema to calibrate at all.
+
+```python
+from faiss_index.providers import DoclingStructureProvider
+
+idx = FaissDocumentIndex(
+    base_path="./data",
+    structure_provider=DoclingStructureProvider(),  # needs: pip install -e ".[docling]"
+)
+```
+
+There's no default `structure_provider` (same reasoning as `rerank_provider`) — pass
+your own object implementing `extract_sections(file_path: str) -> Dict[str, str]`
+otherwise. One trade-off to know about: Docling parses the original file itself (it
+needs real layout, not text `read_document` already flattened), so each file gets
+processed twice when this is configured — once through the usual
+pdfplumber/pytesseract path for `full`/`chunks`, once through Docling for `sections`.
+
+**Known issue (unresolved):** in testing against real Brazilian court-generated PDFs,
+`DoclingStructureProvider` produced corrupted text — garbled numeric sequences instead
+of readable content — on documents that `pdfplumber` (the default `full`/`chunks`
+path) reads correctly. Reproduced across both of Docling's PDF backends (default and
+`PyPdfiumDocumentBackend`), so it looks like a font/ToUnicode-CMap encoding issue in
+those specific PDFs that Docling doesn't resolve — not a bug in this integration. The
+architecture itself (`StructureProvider` Protocol, `build_indices`/`add_new_documents`
+wiring) is solid and tested (with a fake provider); `DoclingStructureProvider` just
+isn't reliably usable yet for documents that hit this. Options not yet explored:
+trying `unstructured` as an alternative backend, or a fix upstream in Docling.
+
+Separately: `DoclingStructureProvider.__init__` disables Docling's own OCR by default
+(`do_ocr=False`) and sets `KMP_DUPLICATE_LIB_OK`/`OMP_NUM_THREADS` before importing
+Docling — both were needed to avoid a segfault (`faiss` and Docling's `torch`
+dependency each bundle their own OpenMP runtime, which crashed when both loaded in one
+process during testing on Python 3.14/macOS).
+
 ## Quickstart
 
 All progress/status messages go through Python's standard `logging` (module-level
@@ -387,12 +427,14 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True)`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
 `embedding_provider`/`chat_provider` override the default OpenAI-compatible backend
-built from `openai_key`/`embedding_model`/`section_extraction_model` — see
+built from `openai_key`/`embedding_model`/`section_extraction_model`; `rerank_provider`/
+`structure_provider` have no default at all (opt-in capabilities, not part of the
+OpenAI-compatible path) — see
 [Plugging in a custom provider](#plugging-in-a-custom-provider).
 
 ### Building indices
@@ -588,6 +630,12 @@ vision backend.
 way, except there's no default at all — pass `providers.CrossEncoderRerankProvider()`
 (needs `pip install -e ".[rerank]"`) or your own object implementing
 `rerank(query: str, candidates: List[str]) -> List[float]`.
+
+`structure_provider` (see
+[Structure-aware extraction via Docling](#alternative-structure-aware-extraction-via-docling))
+is the same kind of opt-in, no-default capability — pass
+`providers.DoclingStructureProvider()` (needs `pip install -e ".[docling]"`) or your
+own object implementing `extract_sections(file_path: str) -> Dict[str, str]`.
 
 ## The `config.py` and `constants.py` modules
 

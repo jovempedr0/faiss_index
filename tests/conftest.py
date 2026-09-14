@@ -53,6 +53,21 @@ class FakeRerankProvider:
         return [self.scores_by_candidate.get(c, 0.0) for c in candidates]
 
 
+class FakeStructureProvider:
+    """
+    Implements providers.StructureProvider: sections driven by a lookup dict keyed by
+    file path (default: {} — no sections for a path not registered).
+    """
+
+    def __init__(self, sections_by_file: dict = None):
+        self.sections_by_file = sections_by_file or {}
+        self.calls = []  # list of file_path values, one per extract_sections() call
+
+    def extract_sections(self, file_path):
+        self.calls.append(file_path)
+        return self.sections_by_file.get(file_path, {})
+
+
 @pytest.fixture
 def fake_embedding_provider():
     return FakeEmbeddingProvider()
@@ -66,6 +81,11 @@ def fake_chat_provider():
 @pytest.fixture
 def fake_rerank_provider():
     return FakeRerankProvider()
+
+
+@pytest.fixture
+def fake_structure_provider():
+    return FakeStructureProvider()
 
 
 @pytest.fixture

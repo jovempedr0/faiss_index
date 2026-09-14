@@ -20,7 +20,7 @@ from .utils_ocr import extract_text_from_file_ocr_fallback
 from . import config
 from . import constants
 from .i18n import _
-from .providers import EmbeddingProvider, ChatProvider, RerankProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
+from .providers import EmbeddingProvider, ChatProvider, RerankProvider, StructureProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
 
 try:
     # Optional dependency: only used to accelerate search on "flat" indices via
@@ -86,6 +86,7 @@ class FaissDocumentIndex:
                  embedding_provider: Optional[EmbeddingProvider] = None,
                  chat_provider: Optional[ChatProvider] = None,
                  rerank_provider: Optional[RerankProvider] = None,
+                 structure_provider: Optional[StructureProvider] = None,
                  embedding_batch_size: int = config.DEFAULT_EMBEDDING_BATCH_SIZE,
                  num_threads: Optional[int] = None,
                  index_type: str = config.DEFAULT_INDEX_TYPE,
@@ -143,6 +144,14 @@ class FaissDocumentIndex:
                 into the OpenAI-compatible path. `providers.CrossEncoderRerankProvider`
                 is the built-in option (needs the optional `sentence-transformers`
                 dependency: `pip install -e ".[rerank]"`).
+            structure_provider (Optional[StructureProvider]): If set, the `sections`
+                strategy is built from this provider's `extract_sections(file_path)`
+                instead of the LLM-calibrated pattern schema (`register_document_type`/
+                `extract_sections`) — no calibration needed, each document's own
+                structure defines its sections. `providers.DoclingStructureProvider`
+                is the built-in option (needs the optional `docling` dependency:
+                `pip install -e ".[docling]"`). No default — like `rerank_provider`,
+                this is an opt-in capability, not part of the OpenAI-compatible path.
             embedding_batch_size (int): How many texts are sent per call to the
                 embeddings API. Defaults to 100.
             num_threads (Optional[int]): Number of threads FAISS should use for search.
@@ -210,6 +219,7 @@ class FaissDocumentIndex:
             model=section_extraction_model, api_key=openai_key
         )
         self.rerank_provider = rerank_provider
+        self.structure_provider = structure_provider
         self.embedding_dim = self.embedding_provider.dimension
 
         logger.info(_("Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s") % {"model": getattr(self.embedding_provider, "model", embedding_model), "dim": self.embedding_dim})
@@ -425,6 +435,43 @@ class FaissDocumentIndex:
 
         for file_path, content in docs:
             sections = self.extract_sections(content, document_type)
+            for section_name, section_text in sections.items():
+                if section_text and section_name != "completo":
+                    all_texts.append(section_text)
+                    all_metadata.append({
+                        "file": file_path,
+                        "section_name": section_name,
+                        "type": "section",
+                        "section_text": section_text,
+                        "content": content,
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+                    })
+
+        embeddings = self.get_embeddings(all_texts)
+        return embeddings, all_metadata
+
+    def create_embeddings_sections_via_structure(self, docs: List[Tuple[str, str]]) -> Tuple[np.ndarray, List]:
+        """
+        Creates embeddings for sections extracted via `self.structure_provider`
+        (e.g. `providers.DoclingStructureProvider`) instead of the LLM-calibrated
+        pattern schema — each document's own real structure (heading hierarchy)
+        defines its sections, so no calibration is needed for the document_type.
+
+        Parameters:
+            docs (List[Tuple[str, str]]): List of tuples with the file path and the
+                document's content (the content itself isn't used for extraction here
+                — the provider re-reads the file directly to see its real layout —
+                but is still recorded in each section's metadata, same as
+                `create_embeddings_sections`).
+
+        Returns:
+            Tuple[np.ndarray, List]: Same shape as `create_embeddings_sections`.
+        """
+        all_texts = []
+        all_metadata = []
+
+        for file_path, content in docs:
+            sections = self.structure_provider.extract_sections(file_path)
             for section_name, section_text in sections.items():
                 if section_text and section_name != "completo":
                     all_texts.append(section_text)
@@ -764,21 +811,27 @@ class FaissDocumentIndex:
 
         logger.info(_("Processing %(count)s documents of %(document_type)s...") % {"count": len(docs), "document_type": document_type})
 
-        if document_type not in self.section_schemas:
-            self._load_section_schema(document_type, output_dir)
-        if document_type not in self.section_schemas:
-            sample_texts = [content for _, content in docs[: self.MAX_SECTION_SAMPLE_DOCS]]
-            self.register_document_type(document_type, sample_texts)
-        self._save_section_schema(document_type, output_dir)
-
         embeddings_map = {
             "full": self.create_embeddings_full(docs),
             "chunks": self.create_embeddings_chunks(docs)
         }
-        if self.section_schemas.get(document_type):
-            embeddings_map["sections"] = self.create_embeddings_sections(docs, document_type)
+
+        if self.structure_provider is not None:
+            # Each document's own structure defines its sections — no schema to
+            # calibrate/save (the pattern-based path below is skipped entirely).
+            embeddings_map["sections"] = self.create_embeddings_sections_via_structure(docs)
         else:
-            logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
+            if document_type not in self.section_schemas:
+                self._load_section_schema(document_type, output_dir)
+            if document_type not in self.section_schemas:
+                sample_texts = [content for _, content in docs[: self.MAX_SECTION_SAMPLE_DOCS]]
+                self.register_document_type(document_type, sample_texts)
+            self._save_section_schema(document_type, output_dir)
+
+            if self.section_schemas.get(document_type):
+                embeddings_map["sections"] = self.create_embeddings_sections(docs, document_type)
+            else:
+                logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
 
         self.indices[document_type] = {}
 
@@ -1409,7 +1462,10 @@ class FaissDocumentIndex:
             if strategy == "full":
                 new_embeddings, new_metadata = self.create_embeddings_full(new_docs)
             elif strategy == "sections":
-                new_embeddings, new_metadata = self.create_embeddings_sections(new_docs, document_type)
+                if self.structure_provider is not None:
+                    new_embeddings, new_metadata = self.create_embeddings_sections_via_structure(new_docs)
+                else:
+                    new_embeddings, new_metadata = self.create_embeddings_sections(new_docs, document_type)
             elif strategy == "chunks":
                 new_embeddings, new_metadata = self.create_embeddings_chunks(new_docs)
             else:

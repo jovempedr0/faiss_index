@@ -8,7 +8,8 @@ but any object implementing the same methods can be passed in instead.
 """
 import base64
 import json
-from typing import List, Optional, Protocol
+import os
+from typing import Dict, List, Optional, Protocol
 
 import openai
 
@@ -32,6 +33,10 @@ class VisionProvider(Protocol):
 
 class RerankProvider(Protocol):
     def rerank(self, query: str, candidates: List[str]) -> List[float]: ...
+
+
+class StructureProvider(Protocol):
+    def extract_sections(self, file_path: str) -> Dict[str, str]: ...
 
 
 def _resolve_embedding_dimension(model: str, dimension: Optional[int]) -> int:
@@ -135,3 +140,71 @@ class CrossEncoderRerankProvider:
 
     def rerank(self, query: str, candidates: List[str]) -> List[float]:
         return [float(score) for score in self._model.predict([(query, c) for c in candidates])]
+
+
+class DoclingStructureProvider:
+    """
+    Extracts sections from a document's real structure (heading hierarchy, via
+    Docling's layout-aware parsing) instead of the LLM-calibrated text-pattern
+    matching in FaissDocumentIndex.extract_sections. No schema calibration needed —
+    each document's own headings define its sections. Optional dependency: install
+    with `pip install -e ".[docling]"`.
+
+    Note: works on the original file (needs real layout, not already-flattened text),
+    so it re-reads/re-parses the file independently of `read_document`/`utils_ocr.py` —
+    when this provider is configured, each file is processed twice (once for
+    full/chunks via the usual pipeline, once here for sections).
+
+    `do_ocr` defaults to False: Docling's own OCR engine (RapidOCR, torch-based)
+    segfaulted in testing (Python 3.14 + torch on macOS) — likely an environment/ABI
+    issue, not a Docling bug, but disabling it by default avoids crashing the whole
+    process for what's usually unnecessary anyway (a digitally-generated PDF already
+    has embedded text; `utils_ocr.py`'s own OCR fallback already covers scanned pages
+    for `full`/`chunks` regardless). A scanned page Docling can't read without OCR
+    just won't contribute to `sections` — set `do_ocr=True` to use Docling's OCR
+    instead, if your environment handles it fine.
+    """
+
+    _HEADING_LABEL_HINTS = ("section_header", "title")
+
+    def __init__(self, do_ocr: bool = False):
+        # faiss (already imported by the time this class is reachable — core.py
+        # imports it unconditionally) and torch (pulled in by docling) each bundle
+        # their own OpenMP runtime; loading both in one process segfaulted in testing
+        # unless these are set before torch initializes. Setting them here (before the
+        # docling/torch import below) is late enough to still take effect.
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        try:
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.base_models import InputFormat
+        except ImportError as e:
+            raise ImportError(
+                _("DoclingStructureProvider needs the 'docling' package. "
+                  "Install it with: pip install -e \".[docling]\"")
+            ) from e
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = do_ocr
+        self._converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+
+    def extract_sections(self, file_path: str) -> Dict[str, str]:
+        doc = self._converter.convert(file_path).document
+
+        sections: Dict[str, str] = {"completo": doc.export_to_text(), "cabecalho": ""}
+        current_section = "cabecalho"
+
+        for item, _level in doc.iterate_items():
+            text = getattr(item, "text", None)
+            if not text or not text.strip():
+                continue
+            label = str(getattr(item, "label", "")).lower()
+            if any(hint in label for hint in self._HEADING_LABEL_HINTS):
+                current_section = text.strip().lower().replace(" ", "_")
+                sections.setdefault(current_section, "")
+            else:
+                sections[current_section] = sections.get(current_section, "") + text + "\n"
+
+        return {k: v.strip() for k, v in sections.items() if v.strip()}
