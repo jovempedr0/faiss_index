@@ -92,3 +92,45 @@ def test_unload_indices_invalidates_bm25_cache(make_index):
 
     idx.unload_indices("doctype")
     assert "doctype" not in idx._bm25_indices
+
+
+def test_reloading_a_strategy_invalidates_bm25_cache(make_index, fake_chat_provider, tmp_path):
+    # Regression test: load_indices() overwrites self.indices[document_type][strategy]
+    # directly (unlike add_new_documents/unload_indices, both of which pop the cached
+    # BM25 index too) — reloading a strategy already in memory, without unload_indices
+    # first, used to leave evaluate_strategy_hybrid's BM25 index built from the
+    # *previous* corpus while self.indices already pointed at the new one, silently
+    # attributing stale BM25 ranks/scores to the wrong documents.
+    document_type = "doctype"
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "out"
+    (data_dir / document_type).mkdir(parents=True)
+    (data_dir / document_type / "a.txt").write_text("gato preto no quintal", encoding="utf-8")
+    (data_dir / document_type / "b.txt").write_text("cachorro branco latindo", encoding="utf-8")
+
+    idx = make_index(embedding_dim=8)
+    fake_chat_provider.responses.append({"sections": []})  # no structure -> skip "sections"
+    idx.build_indices(document_type=document_type, base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+    idx.load_indices(path_indices=str(output_dir), document_types=[document_type], strategies=["chunks"], use_gpu=False)
+
+    idx.evaluate_strategy_hybrid("gato preto", document_type, "chunks", k=5)  # warms the BM25 cache
+    assert "chunks" in idx._bm25_indices[document_type]
+
+    # Corpus on disk changes completely; rebuilt and reloaded on the SAME instance,
+    # with no unload_indices() in between.
+    for f in (data_dir / document_type).iterdir():
+        f.unlink()
+    (data_dir / document_type / "c.txt").write_text("processo judicial numero um", encoding="utf-8")
+    (data_dir / document_type / "d.txt").write_text("contrato de prestacao de servicos", encoding="utf-8")
+
+    idx.build_indices(document_type=document_type, base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+    idx.load_indices(path_indices=str(output_dir), document_types=[document_type], strategies=["chunks"], use_gpu=False)
+
+    assert "chunks" not in idx._bm25_indices.get(document_type, {})  # invalidated by the reload
+
+    results = idx.evaluate_strategy_hybrid("gato preto", document_type, "chunks", k=5)
+    found_files = {r["metadata"]["file"] for r in results["results"]}
+    assert found_files == {
+        str(data_dir / document_type / "c.txt"),
+        str(data_dir / document_type / "d.txt"),
+    }

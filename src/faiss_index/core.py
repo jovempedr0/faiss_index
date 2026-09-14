@@ -1377,6 +1377,10 @@ class FaissDocumentIndex:
             loaded_tuple = (final_index, metadata, embeddings)
             self.indices[document_type][strategy] = loaded_tuple
             loaded_data[document_type][strategy] = loaded_tuple
+            # Stale otherwise: a strategy already loaded that gets reloaded here (no
+            # unload_indices() in between) would keep evaluate_strategy_hybrid's cached
+            # BM25 index pointing at the previous metadata list.
+            self._bm25_indices.get(document_type, {}).pop(strategy, None)
 
             device = (
                 "GPU"
