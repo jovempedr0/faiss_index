@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # ocr: core.py imports utils_ocr unconditionally, so it's needed just to
+      # import the package, not only for actual OCR calls. rerank/docling extras
+      # are imported lazily inside their provider classes, which the unit suite
+      # (pytest -m "not integration", the pyproject default) never instantiates.
+      - name: Install dependencies
+        run: pip install -e ".[ocr,dev]"
+
+      - name: Run tests
+        run: pytest -v

@@ -723,3 +723,11 @@ isn't set or the server isn't reachable — it builds a tiny throwaway index and
 own local dev setup (oMLX serving `jina-embeddings-v5-text-small-retrieval-mlx` +
 `Qwen3-14B-4bit`); point it at different models via `FAISS_INDEX_TEST_EMBEDDING_MODEL`/
 `FAISS_INDEX_TEST_EMBEDDING_DIM`/`FAISS_INDEX_TEST_CHAT_MODEL`.
+
+**CI:** `.github/workflows/tests.yml` runs the unit suite (Python 3.11 and 3.12) on
+every push/PR to `main`. It installs the `ocr` extra alongside `dev` — `core.py`
+imports `utils_ocr` unconditionally, so `pdfplumber`/`pytesseract`/`pdf2image`/`Pillow`
+are needed just to import the package, not only for real OCR calls. `rerank`/`docling`
+aren't installed: both are imported lazily inside their provider classes
+(`CrossEncoderRerankProvider`/`DoclingStructureProvider`), which the unit suite never
+instantiates. The integration test stays excluded, same as running `pytest` locally.
