@@ -1,3 +1,8 @@
+import pytest
+
+from faiss_index.providers import DoclingStructureProvider, _looks_corrupted
+
+
 def test_build_indices_with_structure_provider_skips_calibration(make_index, fake_structure_provider, tmp_path):
     idx = make_index(embedding_dim=4, structure_provider=fake_structure_provider)
     document_type = "doctype"
@@ -70,3 +75,67 @@ def test_build_indices_without_structure_provider_still_calibrates(make_index, f
     )
 
     assert idx.section_schemas[document_type] == {"intro": ["conteudo"]}
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Real sample of Docling's glyph-id fallback on a broken-font PDF (see providers.py).
+    ("0 1 2 3\n\n3 4 5\n\ni255\n\n7 8 9 0 4\n\n10 11\n\n124 13 14\n\n9i255", True),
+    ("Bruna Epitacio Alkimim Santos\n\nDe:\n\nCJ MANDADOS\n\nterça-feira, 1 de outubro de 2024", False),
+    ("", True),
+    ("   ", True),
+    # Numeric-heavy but legitimate (protocol/CPF numbers alongside real words).
+    ("Protocolo 133782476332914286 CPF 000.000.000-00 1069338-24.2024.4.01.3400", False),
+])
+def test_looks_corrupted(text, expected):
+    assert _looks_corrupted(text) is expected
+
+
+def test_docling_structure_provider_falls_back_to_ocr_on_corrupted_text(monkeypatch):
+    # Bypasses __init__ (which imports/configures the real Docling converter) so this
+    # test needs neither the 'docling' extra nor a real PDF — only extract_sections's
+    # own corruption-detection/fallback logic is under test here.
+    provider = DoclingStructureProvider.__new__(DoclingStructureProvider)
+
+    class FakeDoc:
+        def export_to_text(self):
+            return "0 1 2 3\n\n3 4 5\n\ni255"
+
+        def iterate_items(self):
+            return []
+
+    class FakeConverter:
+        def convert(self, file_path):
+            return type("Result", (), {"document": FakeDoc()})()
+
+    provider._converter = FakeConverter()
+
+    monkeypatch.setattr(
+        "faiss_index.utils_ocr.extract_text_from_file_ocr_fallback",
+        lambda file_path: "texto recuperado via OCR",
+    )
+
+    assert provider.extract_sections("qualquer.pdf") == {"completo": "texto recuperado via OCR"}
+
+
+def test_docling_structure_provider_returns_empty_when_ocr_fallback_also_fails(monkeypatch):
+    provider = DoclingStructureProvider.__new__(DoclingStructureProvider)
+
+    class FakeDoc:
+        def export_to_text(self):
+            return ""
+
+        def iterate_items(self):
+            return []
+
+    class FakeConverter:
+        def convert(self, file_path):
+            return type("Result", (), {"document": FakeDoc()})()
+
+    provider._converter = FakeConverter()
+
+    monkeypatch.setattr(
+        "faiss_index.utils_ocr.extract_text_from_file_ocr_fallback",
+        lambda file_path: "",
+    )
+
+    assert provider.extract_sections("qualquer.pdf") == {}

@@ -8,13 +8,17 @@ but any object implementing the same methods can be passed in instead.
 """
 import base64
 import json
+import logging
 import os
+import re
 from typing import Dict, List, Optional, Protocol
 
 import openai
 
 from . import constants
 from .i18n import _
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(Protocol):
@@ -142,6 +146,27 @@ class CrossEncoderRerankProvider:
         return [float(score) for score in self._model.predict([(query, c) for c in candidates])]
 
 
+_WORD_CHAR_RE = re.compile(r'[^\W\d_]', re.UNICODE)
+
+
+def _looks_corrupted(text: str, min_alpha_token_ratio: float = 0.2) -> bool:
+    """
+    Detects Docling's failure mode on PDFs with a broken/missing ToUnicode CMap: instead
+    of pdfplumber's literal "(cid:N)" placeholders (which utils_ocr.py already detects
+    per-page and routes to OCR), Docling emits its own glyph-id fallback as
+    whitespace-separated digit soup (e.g. "0 1 2 3\n\n3 4 5\n\ni255 ..."). Real text has
+    most tokens containing at least one letter; digit soup doesn't. Empirically, across
+    23 real Brazilian-court PDFs (2 with this broken-font issue, 21 clean, including one
+    legitimately numeric-heavy one), the corrupted docs measured ~0.13 and every clean
+    doc measured >=0.30 — this threshold sits in between.
+    """
+    tokens = text.split()
+    if not tokens:
+        return True
+    alpha_tokens = sum(1 for token in tokens if _WORD_CHAR_RE.search(token))
+    return (alpha_tokens / len(tokens)) < min_alpha_token_ratio
+
+
 class DoclingStructureProvider:
     """
     Extracts sections from a document's real structure (heading hierarchy, via
@@ -192,8 +217,24 @@ class DoclingStructureProvider:
 
     def extract_sections(self, file_path: str) -> Dict[str, str]:
         doc = self._converter.convert(file_path).document
+        full_text = doc.export_to_text()
 
-        sections: Dict[str, str] = {"completo": doc.export_to_text(), "cabecalho": ""}
+        if _looks_corrupted(full_text):
+            # Same broken-font failure mode utils_ocr.py already handles for full/chunks
+            # (it detects pdfplumber's "(cid:" marker per page and falls back to OCR) —
+            # reuse that pipeline here to recover flat text. No section structure for
+            # this one document (there's nothing real to find headings in), same as when
+            # the LLM-calibrated schema finds no structure at all.
+            logger.warning(
+                _("Docling produced unreadable text for '%(file_path)s' (likely a broken "
+                  "font/ToUnicode-CMap PDF) — falling back to OCR for flat text; no "
+                  "section structure for this document.") % {"file_path": file_path}
+            )
+            from .utils_ocr import extract_text_from_file_ocr_fallback
+            recovered = extract_text_from_file_ocr_fallback(file_path).strip()
+            return {"completo": recovered} if recovered else {}
+
+        sections: Dict[str, str] = {"completo": full_text, "cabecalho": ""}
         current_section = "cabecalho"
 
         for item, _level in doc.iterate_items():

@@ -16,3 +16,6 @@ build/
 # Local test fixtures (real documents) and generated indices — kept on disk, not versioned
 fixtures/casos/
 fixtures/faiss_index_output/
+
+# Claude
+.claude/

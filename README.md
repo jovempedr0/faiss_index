@@ -133,16 +133,14 @@ needs real layout, not text `read_document` already flattened), so each file get
 processed twice when this is configured — once through the usual
 pdfplumber/pytesseract path for `full`/`chunks`, once through Docling for `sections`.
 
-**Known issue (unresolved):** in testing against real Brazilian court-generated PDFs,
-`DoclingStructureProvider` produced corrupted text — garbled numeric sequences instead
-of readable content — on documents that `pdfplumber` (the default `full`/`chunks`
-path) reads correctly. Reproduced across both of Docling's PDF backends (default and
-`PyPdfiumDocumentBackend`), so it looks like a font/ToUnicode-CMap encoding issue in
-those specific PDFs that Docling doesn't resolve — not a bug in this integration. The
-architecture itself (`StructureProvider` Protocol, `build_indices`/`add_new_documents`
-wiring) is solid and tested (with a fake provider); `DoclingStructureProvider` just
-isn't reliably usable yet for documents that hit this. Options not yet explored:
-trying `unstructured` as an alternative backend, or a fix upstream in Docling.
+**Broken-font PDFs:** some PDFs (a font-encoding issue with a broken/missing
+ToUnicode CMap, seen in some Brazilian court-generated documents) make Docling emit
+garbled text instead of real content. `DoclingStructureProvider` detects this per file
+(`providers._looks_corrupted`) and falls back to `utils_ocr.py`'s pdfplumber+OCR
+pipeline — the same one `full`/`chunks` already uses for these documents — to recover
+flat text. That document's `sections` output is then just a single `completo` entry,
+with no heading structure (same graceful degradation as when the LLM-calibrated schema
+finds no structure at all).
 
 Separately: `DoclingStructureProvider.__init__` disables Docling's own OCR by default
 (`do_ocr=False`) and sets `KMP_DUPLICATE_LIB_OK`/`OMP_NUM_THREADS` before importing
