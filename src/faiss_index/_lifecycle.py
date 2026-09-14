@@ -154,9 +154,11 @@ class IndexLifecycleMixin:
 
         logger.info(_("Processing %(count)s documents of %(document_type)s...") % {"count": len(docs), "document_type": document_type})
 
+        # "full" is pooled from the chunk embeddings — embedded once, used by both.
+        chunks = self.create_embeddings_chunks(docs)
         embeddings_map = {
-            "full": self.create_embeddings_full(docs),
-            "chunks": self.create_embeddings_chunks(docs)
+            "full": self.create_embeddings_full(docs, chunks=chunks),
+            "chunks": chunks
         }
 
         if self.structure_provider is not None:
@@ -384,18 +386,23 @@ class IndexLifecycleMixin:
         if document_type not in self.indices:
             raise ValueError(f"Index for document type '{document_type}' not found. Load the index before adding documents.")
 
+        # "full" is pooled from the chunk embeddings: embed new_docs' chunks at most once,
+        # shared by "full" and "chunks" when both are loaded.
+        new_chunks = None
         for strategy, (index, metadata, embeddings) in self.indices[document_type].items():
             logger.info(_("Adding new documents to strategy '%(strategy)s' for '%(document_type)s'...") % {"strategy": strategy, "document_type": document_type})
 
             if strategy == "full":
-                new_embeddings, new_metadata = self.create_embeddings_full(new_docs)
+                new_chunks = new_chunks or self.create_embeddings_chunks(new_docs)
+                new_embeddings, new_metadata = self.create_embeddings_full(new_docs, chunks=new_chunks)
             elif strategy == "sections":
                 if self.structure_provider is not None:
                     new_embeddings, new_metadata = self.create_embeddings_sections_via_structure(new_docs)
                 else:
                     new_embeddings, new_metadata = self.create_embeddings_sections(new_docs, document_type)
             elif strategy == "chunks":
-                new_embeddings, new_metadata = self.create_embeddings_chunks(new_docs)
+                new_chunks = new_chunks or self.create_embeddings_chunks(new_docs)
+                new_embeddings, new_metadata = new_chunks
             else:
                 continue
 

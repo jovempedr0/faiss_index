@@ -38,6 +38,62 @@ def test_get_embeddings_empty_text_becomes_zero_vector(make_index):
     assert not np.array_equal(result[1], np.zeros(4))
 
 
+def test_create_embeddings_full_is_the_normalized_mean_of_its_normalized_chunks(make_index):
+    idx = make_index(embedding_dim=4)
+    docs = [("doc.txt", " ".join(f"palavra{i}" for i in range(600)))]  # 3 chunks (0, 250, 500)
+    chunk_embeddings, chunk_metadata = idx.create_embeddings_chunks(docs)
+    assert len(chunk_metadata) == 3
+
+    full_embeddings, _metadata = idx.create_embeddings_full(docs)
+
+    # The fake provider's vectors aren't unit-length, so both normalizations matter here.
+    unit_chunks = chunk_embeddings / np.linalg.norm(chunk_embeddings, axis=1, keepdims=True)
+    expected = unit_chunks.mean(axis=0)
+    expected /= np.linalg.norm(expected)
+    assert np.allclose(full_embeddings[0], expected)
+    assert np.isclose(np.linalg.norm(full_embeddings[0]), 1.0)
+
+
+def test_create_embeddings_full_covers_text_past_the_embedding_input_limit(make_index):
+    # Regression test: "full" used to embed the whole document in one call, truncated to
+    # MAX_EMBEDDING_INPUT_CHARS — two documents identical up to that point got the exact
+    # same vector no matter what followed (on a real corpus, 20 of 23 documents were
+    # longer than the limit, so only 8.4% of the text was represented at all).
+    from faiss_index import constants
+
+    idx = make_index(embedding_dim=4)
+    shared_prefix = "prefixo " * 1100
+    assert len(shared_prefix) > constants.MAX_EMBEDDING_INPUT_CHARS
+    docs = [("a.txt", shared_prefix + "gato preto " * 150), ("b.txt", shared_prefix + "cachorro branco " * 150)]
+
+    full_embeddings, _metadata = idx.create_embeddings_full(docs)
+
+    assert not np.allclose(full_embeddings[0], full_embeddings[1])
+
+
+def test_create_embeddings_full_reuses_given_chunks_without_embedding_again(make_index, fake_embedding_provider):
+    idx = make_index(embedding_dim=4)
+    docs = [("a.txt", "primeiro documento"), ("b.txt", "segundo documento")]
+    chunks = idx.create_embeddings_chunks(docs)
+    calls_before = list(fake_embedding_provider.embedding_calls)
+
+    reused, _ = idx.create_embeddings_full(docs, chunks=chunks)
+
+    assert fake_embedding_provider.embedding_calls == calls_before
+    assert np.allclose(reused, idx.create_embeddings_full(docs)[0])
+
+
+def test_create_embeddings_full_document_without_words_gets_zero_vector(make_index):
+    idx = make_index(embedding_dim=4)
+
+    full_embeddings, metadata = idx.create_embeddings_full([("vazio.txt", "   "), ("doc.txt", "texto real")])
+
+    assert full_embeddings.shape == (2, 4)
+    assert np.array_equal(full_embeddings[0], np.zeros(4))
+    assert np.isclose(np.linalg.norm(full_embeddings[1]), 1.0)
+    assert [m["file"] for m in metadata] == ["vazio.txt", "doc.txt"]
+
+
 def test_get_embeddings_truncates_long_input(make_index):
     idx = make_index(embedding_dim=4)
     from faiss_index import constants

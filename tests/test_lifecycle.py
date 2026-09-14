@@ -98,6 +98,25 @@ def test_add_new_documents_extends_index_and_metadata(make_index):
     assert stored_metadata[-1]["file"] == "novo.txt"
 
 
+def test_add_new_documents_embeds_new_chunks_once_for_full_and_chunks(make_index, fake_embedding_provider):
+    idx = make_index(embedding_dim=4)
+    docs = [("file_0.txt", "doc um"), ("file_1.txt", "doc dois")]
+    chunk_embeddings, chunk_metadata = idx.create_embeddings_chunks(docs)
+    chunks_index = faiss.IndexFlatL2(4)
+    chunks_index.add(chunk_embeddings.astype("float32"))
+    idx.indices["contrato"] = {
+        "full": _build_full_index(idx, ["doc um", "doc dois"]),
+        "chunks": (chunks_index, chunk_metadata, chunk_embeddings),
+    }
+    fake_embedding_provider.embedding_calls.clear()
+
+    idx.add_new_documents("contrato", new_docs=[("novo.txt", "conteudo do novo documento")])
+
+    assert fake_embedding_provider.embedding_calls == [1]  # the new doc's single chunk, once
+    assert idx.indices["contrato"]["full"][0].ntotal == 3
+    assert idx.indices["contrato"]["chunks"][0].ntotal == 3
+
+
 def test_add_new_documents_skips_strategies_not_built(make_index):
     idx = make_index(embedding_dim=4)
     index, metadata, embeddings = _build_full_index(idx, ["doc um"])

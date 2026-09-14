@@ -95,6 +95,13 @@ The same instance can index and search across multiple document types at once
 | `sections` | Each structural section of the document | `section_name`, `section_text` |
 | `chunks` | ~500-word windows, with 50% overlap | `chunk_index`, `chunk_text` |
 
+A `full` vector is the mean of the document's chunk embeddings, L2-normalized before
+and after averaging — so it represents the entire text (a single embedding call would
+only see the first `MAX_EMBEDDING_INPUT_CHARS` characters), and L2 search over `full`
+still ranks by cosine similarity, like the other strategies. `build_indices` pools
+the embeddings it already computed for `chunks`, so `full` costs no extra embedding
+calls.
+
 ### LLM-calibrated section schema
 
 The `sections` strategy **doesn't assume any fixed document structure**. Before it
@@ -402,6 +409,10 @@ idx.load_indices(path_indices="./faiss_index", document_types=["contract"], stra
 new_docs = [("./data/contract/2026-01/new.pdf", extracted_text)]
 idx.add_new_documents(document_type="contract", new_docs=new_docs)
 ```
+
+The new documents' chunks are embedded once and shared by `full` and `chunks` —
+with only `full` loaded, they're still embedded (one call per ~250 words, not one per
+document), since that's what the `full` vector is pooled from.
 
 This updates the indices **in memory**; to persist to disk, run `build_indices`
 again (or save the index/metadata manually, following the

@@ -6,6 +6,7 @@ three indexing strategies ("full", "sections", "chunks"). Composed into the clas
 """
 import logging
 import time
+from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -15,6 +16,12 @@ from .i18n import _
 from .utils_ocr import extract_text_from_file_ocr_fallback
 
 logger = logging.getLogger(__name__)
+
+
+def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
+    """Scales vectors (along the last axis) to unit L2 norm; all-zero vectors stay zero."""
+    norms = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    return vectors / np.maximum(norms, 1e-12)
 
 
 class DocumentIngestionMixin:
@@ -89,24 +96,48 @@ class DocumentIngestionMixin:
             f"Supported extensions: {self.SUPPORTED_FILE_EXTENSIONS}."
         )
 
-    def create_embeddings_full(self, docs: List[Tuple[str, str]]) -> Tuple[np.ndarray, List]:
+    def create_embeddings_full(
+        self, docs: List[Tuple[str, str]], chunks: Optional[Tuple[np.ndarray, List]] = None
+    ) -> Tuple[np.ndarray, List]:
         """
-        Generates embeddings for a list of full documents and returns the embeddings
-        together with the metadata.
+        Generates one embedding per full document and returns the embeddings together
+        with the metadata.
+
+        A document's vector is the mean of its chunks' embeddings (see
+        `create_embeddings_chunks`), L2-normalized before and after averaging — so it
+        covers the whole text, not just the first `MAX_EMBEDDING_INPUT_CHARS` characters
+        a single embedding call would see. Normalizing the mean back to unit length
+        keeps `IndexFlatL2` ranking equivalent to cosine similarity: a mean of unit
+        vectors gets shorter the more varied the chunks are, and that shorter length
+        alone would otherwise pull long, heterogeneous documents up the ranking.
 
         Parameters:
             docs (List[Tuple[str, str]]): List of tuples, each containing the file name
                 and the document's full text.
+            chunks (Optional[Tuple[np.ndarray, List]]): What `create_embeddings_chunks(docs)`
+                already returned for these same `docs`, to pool from instead of embedding
+                the chunks again. If None, they're computed here.
 
         Returns:
             Tuple[np.ndarray, List]: A tuple containing:
-                - A numpy array with the texts' embeddings.
+                - A numpy array with one vector per document (a zero vector for a
+                  document with no words, which has no chunks to pool).
                 - A list of metadata dicts, including the file name and the type ("full").
         """
-        texts = [doc[1] for doc in docs]
-        embeddings = self.get_embeddings(texts)
+        chunk_embeddings, chunk_metadata = chunks if chunks is not None else self.create_embeddings_chunks(docs)
+
+        rows_by_file: Dict[str, List[int]] = defaultdict(list)
+        for row, chunk_meta in enumerate(chunk_metadata):
+            rows_by_file[chunk_meta["file"]].append(row)
+
+        embeddings = np.zeros((len(docs), self.embedding_dim))
+        for i, (file_path, _content) in enumerate(docs):
+            rows = rows_by_file.get(file_path)
+            if rows:
+                embeddings[i] = _l2_normalize(_l2_normalize(chunk_embeddings[rows]).mean(axis=0))
+
         # Each entry stores ONLY that document's own text (a 1-element list).
-        # Previously the whole corpus (`texts`) was stored in every entry, which made
+        # Previously the whole corpus (every doc's text) was stored in every entry, which made
         # retrieval degenerate — see processar_resultados_busca.
         metadata = [{"file": doc[0], "type": "full", "content": [doc[1]], "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())} for doc in docs]
         return embeddings, metadata
