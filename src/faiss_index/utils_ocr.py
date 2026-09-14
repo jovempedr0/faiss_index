@@ -119,27 +119,22 @@ def extract_text_from_file_ocr_fallback(file_path: str, ocr_dpi: int = 300, max_
         str: The text extracted from the file, concatenated into a single string with
              line breaks between pages/paragraphs. Returns an empty string on error.
     """
-    temp_pdf_path = None
-
     try:
         if file_path.lower().endswith(".pdf"):
             return process_pdf_file(file_path, ocr_dpi, max_workers)
-        else:
-            logger.info(_("Converting file to PDF..."))
-            temp_pdf_path = convert_any_to_pdf(file_path, os.path.dirname(file_path))
 
+        logger.info(_("Converting file to PDF..."))
+        # Converts into a private temporary directory, never next to the source file:
+        # LibreOffice names its output <basename>.pdf, so converting "contrato.docx" in
+        # place would silently overwrite a user's own "contrato.pdf" sitting alongside
+        # it — and the temp-file cleanup would then delete that PDF for good.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_pdf_path = convert_any_to_pdf(file_path, temp_dir)
             return process_pdf_file(temp_pdf_path, ocr_dpi, max_workers)
 
     except Exception as e:
         logger.error(_("Error processing file %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
         return ""
-    finally:
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.remove(temp_pdf_path)
-                logger.info(_("Temporary file removed: %(temp_pdf_path)s") % {"temp_pdf_path": temp_pdf_path})
-            except OSError as e:
-                logger.error(_("Error trying to delete temporary file %(temp_pdf_path)s: %(error)s") % {"temp_pdf_path": temp_pdf_path, "error": e})
 
 
 def process_pdf_file(file_path: str, ocr_dpi: int, max_workers: int) -> str:

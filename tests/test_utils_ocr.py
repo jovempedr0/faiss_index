@@ -1,5 +1,6 @@
 import threading
 import time
+from pathlib import Path
 
 from faiss_index import utils_ocr
 
@@ -216,16 +217,50 @@ def test_extract_text_from_file_ocr_fallback_pdf_goes_straight_to_process_pdf_fi
 def test_extract_text_from_file_ocr_fallback_converts_non_pdf_then_cleans_up_temp_file(monkeypatch, tmp_path):
     docx_path = tmp_path / "caso.docx"
     docx_path.write_text("dummy")
-    pdf_path = tmp_path / "caso.pdf"
-    pdf_path.write_text("dummy pdf")  # stand-in temp file for os.path.exists()/os.remove() to act on
+    converted_paths = []
 
-    monkeypatch.setattr(utils_ocr, "convert_any_to_pdf", lambda file_path, output_dir: str(pdf_path))
+    def fake_convert_any_to_pdf(file_path, output_dir):
+        pdf_path = Path(output_dir) / "caso.pdf"
+        pdf_path.write_text("dummy pdf")
+        converted_paths.append(pdf_path)
+        return str(pdf_path)
+
+    monkeypatch.setattr(utils_ocr, "convert_any_to_pdf", fake_convert_any_to_pdf)
     monkeypatch.setattr(utils_ocr, "process_pdf_file", lambda file_path, ocr_dpi, max_workers: "convertido")
 
     result = utils_ocr.extract_text_from_file_ocr_fallback(str(docx_path))
 
     assert result == "convertido"
-    assert not pdf_path.exists()
+    assert converted_paths[0].parent != tmp_path  # converted outside the source's folder
+    assert not converted_paths[0].exists()        # and cleaned up afterwards
+    assert list(tmp_path.iterdir()) == [docx_path]
+
+
+def test_extract_text_from_file_ocr_fallback_keeps_same_named_pdf_next_to_source(monkeypatch, tmp_path):
+    # Regression test: the conversion used to write into the source file's own folder.
+    # LibreOffice names its output <basename>.pdf (overwriting anything already there),
+    # and the cleanup then deleted that path — so indexing "caso.docx" destroyed an
+    # unrelated, user-owned "caso.pdf" in the same folder.
+    docx_path = tmp_path / "caso.docx"
+    docx_path.write_text("dummy docx")
+    user_pdf = tmp_path / "caso.pdf"
+    user_pdf.write_text("the user's own pdf")
+
+    def fake_libreoffice(command, check):
+        # Mirrors `libreoffice --headless --convert-to pdf <file> --outdir <dir>`.
+        source, out_dir = command[4], command[6]
+        (Path(out_dir) / (Path(source).stem + ".pdf")).write_text("converted from docx")
+
+    monkeypatch.setattr(utils_ocr, "run", fake_libreoffice)
+    monkeypatch.setattr(
+        utils_ocr, "process_pdf_file",
+        lambda file_path, ocr_dpi, max_workers: Path(file_path).read_text(),
+    )
+
+    result = utils_ocr.extract_text_from_file_ocr_fallback(str(docx_path))
+
+    assert result == "converted from docx"
+    assert user_pdf.read_text() == "the user's own pdf"
 
 
 def test_extract_text_from_file_ocr_fallback_returns_empty_string_on_error(monkeypatch):
