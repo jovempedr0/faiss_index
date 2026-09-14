@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 mps = ["torch"]
 ocr = ["pdfplumber", "pytesseract", "pdf2image", "Pillow"]
+rerank = ["sentence-transformers"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

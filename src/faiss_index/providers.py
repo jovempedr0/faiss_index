@@ -30,6 +30,10 @@ class VisionProvider(Protocol):
     def describe_image(self, image_png_bytes: bytes, prompt: str) -> str: ...
 
 
+class RerankProvider(Protocol):
+    def rerank(self, query: str, candidates: List[str]) -> List[float]: ...
+
+
 def _resolve_embedding_dimension(model: str, dimension: Optional[int]) -> int:
     if dimension is not None:
         return dimension
@@ -108,3 +112,26 @@ class OpenAICompatibleChatProvider:
             }],
         )
         return response.choices[0].message.content
+
+
+class CrossEncoderRerankProvider:
+    """
+    Reranks (query, candidate) pairs with a sentence-transformers CrossEncoder — a
+    model trained to score a pair jointly, generally far more accurate than comparing
+    independently-computed embeddings, at the cost of being run at query time over the
+    candidate set (can't be precomputed like embeddings). Optional dependency: install
+    with `pip install -e ".[rerank]"`.
+    """
+
+    def __init__(self, model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"):
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as e:
+            raise ImportError(
+                _("CrossEncoderRerankProvider needs the 'sentence-transformers' package. "
+                  "Install it with: pip install -e \".[rerank]\"")
+            ) from e
+        self._model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, candidates: List[str]) -> List[float]:
+        return [float(score) for score in self._model.predict([(query, c) for c in candidates])]

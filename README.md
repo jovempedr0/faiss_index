@@ -240,6 +240,36 @@ Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
 (whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
 `similarity`.
 
+### Reranking (retrieve-then-rerank)
+
+A cross-encoder scores a (query, candidate) pair jointly, which is generally more
+accurate than comparing independently-computed embeddings — but has to run at query
+time over the candidate set, so it doesn't replace the initial retrieval, it refines
+it. `rerank_results` takes the `"results"` list from either `evaluate_strategy` or
+`evaluate_strategy_hybrid` and reorders it:
+
+```python
+from faiss_index.providers import CrossEncoderRerankProvider
+
+idx = FaissDocumentIndex(
+    base_path="./data",
+    rerank_provider=CrossEncoderRerankProvider(),  # needs: pip install -e ".[rerank]"
+)
+
+candidates = idx.evaluate_strategy("termination clause", "contract", "chunks", k=30)["results"]
+top5 = idx.rerank_results("termination clause", candidates, k=5)
+for r in top5:
+    print(r["rank"], r["rerank_score"], r["metadata"]["file"])
+```
+
+There's no default `rerank_provider` (unlike `embedding_provider`/`chat_provider`,
+which fall back to the OpenAI-compatible path) — reranking is an opt-in capability
+with a real new dependency, not something already built into the library. Any object
+implementing `rerank(query: str, candidates: List[str]) -> List[float]` works, so a
+non-cross-encoder backend (an LLM call, a hosted rerank API, etc.) can be plugged in
+the same way as `embedding_provider`/`chat_provider` — see
+[Plugging in a custom provider](#plugging-in-a-custom-provider).
+
 ### Comparing strategies and picking the best one
 
 `evaluate_strategy` searches on a single strategy; `compare_strategies` +
@@ -360,6 +390,11 @@ built from `openai_key`/`embedding_model`/`section_extraction_model` — see
   Fuses dense (FAISS) and lexical (BM25) rankings via Reciprocal Rank Fusion — see
   [Hybrid search](#hybrid-search-dense--bm25). Results carry `rrf_score`/
   `dense_rank`/`bm25_rank` instead of `distance`/`similarity`.
+
+- **`rerank_results(query, results, k=None) -> List[Dict]`**
+  Reorders a `"results"` list (from `evaluate_strategy` or `evaluate_strategy_hybrid`)
+  via `self.rerank_provider` — see [Reranking](#reranking-retrieve-then-rerank). Raises
+  `ValueError` if no `rerank_provider` was configured.
 
 - **`compare_strategies(queries, document_type, strategies_compare, k=15) -> Dict`**
   Runs `evaluate_strategy` for several queries × strategies, for comparison.
@@ -514,6 +549,11 @@ The OCR fallback's VLM path (`FAISS_INDEX_OCR_VLM_MODEL`, see
 `faiss_index.utils_ocr.set_vlm_provider(provider)` with any object implementing
 `describe_image(image_png_bytes: bytes, prompt: str) -> str` to use a non-OpenAI-compatible
 vision backend.
+
+`rerank_provider` (see [Reranking](#reranking-retrieve-then-rerank)) works the same
+way, except there's no default at all — pass `providers.CrossEncoderRerankProvider()`
+(needs `pip install -e ".[rerank]"`) or your own object implementing
+`rerank(query: str, candidates: List[str]) -> List[float]`.
 
 ## The `config.py` and `constants.py` modules
 

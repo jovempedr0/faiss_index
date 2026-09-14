@@ -20,7 +20,7 @@ from .utils_ocr import extract_text_from_file_ocr_fallback
 from . import config
 from . import constants
 from .i18n import _
-from .providers import EmbeddingProvider, ChatProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
+from .providers import EmbeddingProvider, ChatProvider, RerankProvider, OpenAICompatibleEmbeddingProvider, OpenAICompatibleChatProvider
 
 try:
     # Optional dependency: only used to accelerate search on "flat" indices via
@@ -85,6 +85,7 @@ class FaissDocumentIndex:
                  section_extraction_model: str = config.DEFAULT_SECTION_EXTRACTION_MODEL,
                  embedding_provider: Optional[EmbeddingProvider] = None,
                  chat_provider: Optional[ChatProvider] = None,
+                 rerank_provider: Optional[RerankProvider] = None,
                  embedding_batch_size: int = config.DEFAULT_EMBEDDING_BATCH_SIZE,
                  num_threads: Optional[int] = None,
                  index_type: str = config.DEFAULT_INDEX_TYPE,
@@ -135,6 +136,13 @@ class FaissDocumentIndex:
                 `OpenAICompatibleChatProvider` is built from `section_extraction_model`/
                 `openai_key`. Pass your own object (any type with a
                 `.complete_structured(prompt, json_schema) -> dict` method) otherwise.
+            rerank_provider (Optional[RerankProvider]): Backend for `rerank_results`
+                (see [Plugging in a custom provider](#plugging-in-a-custom-provider)).
+                Unlike `embedding_provider`/`chat_provider`, there's no default here —
+                reranking is a genuinely new capability, not something already built
+                into the OpenAI-compatible path. `providers.CrossEncoderRerankProvider`
+                is the built-in option (needs the optional `sentence-transformers`
+                dependency: `pip install -e ".[rerank]"`).
             embedding_batch_size (int): How many texts are sent per call to the
                 embeddings API. Defaults to 100.
             num_threads (Optional[int]): Number of threads FAISS should use for search.
@@ -201,6 +209,7 @@ class FaissDocumentIndex:
         self.chat_provider = chat_provider or OpenAICompatibleChatProvider(
             model=section_extraction_model, api_key=openai_key
         )
+        self.rerank_provider = rerank_provider
         self.embedding_dim = self.embedding_provider.dimension
 
         logger.info(_("Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s") % {"model": getattr(self.embedding_provider, "model", embedding_model), "dim": self.embedding_dim})
@@ -948,6 +957,50 @@ class FaissDocumentIndex:
             "search_time": search_time,
             "results": results,
         }
+
+    def rerank_results(self, query: str, results: List[Dict], k: Optional[int] = None) -> List[Dict]:
+        """
+        Reorders a search's results with `self.rerank_provider` — a cross-encoder (or
+        any other model that scores a query/candidate pair jointly), generally more
+        accurate than the embedding similarity used to retrieve them in the first
+        place. The classic retrieve-then-rerank pattern: retrieve a larger candidate
+        pool cheaply (dense and/or BM25), then spend the more expensive per-pair
+        scoring only on those candidates.
+
+        Composable with the "results" list from either `evaluate_strategy` or
+        `evaluate_strategy_hybrid` — this method only needs each item's "metadata".
+
+        Parameters:
+            query (str): The same query the results were retrieved for.
+            results (List[Dict]): A "results" list from `evaluate_strategy`/
+                `evaluate_strategy_hybrid`.
+            k (Optional[int]): How many reranked results to keep. Defaults to all of them.
+
+        Returns:
+            List[Dict]: The input results, reordered by `rerank_score` (descending)
+            and truncated to `k`, each with "rank" recomputed and a new "rerank_score" key.
+
+        Raises:
+            ValueError: If no `rerank_provider` was configured on the constructor.
+        """
+        if self.rerank_provider is None:
+            raise ValueError(
+                "No rerank_provider configured. Pass one to the constructor (e.g. "
+                "providers.CrossEncoderRerankProvider(), needs the optional "
+                "'sentence-transformers' dependency: pip install -e \".[rerank]\")."
+            )
+
+        if not results:
+            return []
+
+        candidates = [self._extract_metadata_text(r["metadata"]) for r in results]
+        scores = self.rerank_provider.rerank(query, candidates)
+
+        reranked = sorted(zip(results, scores), key=lambda pair: pair[1], reverse=True)[:k]
+        return [
+            {**result, "rank": new_rank, "rerank_score": float(score)}
+            for new_rank, (result, score) in enumerate(reranked, start=1)
+        ]
 
 
     def compare_strategies(self, queries: List[str], document_type: str, strategies_compare: list[str], k: int = 15) -> Dict:

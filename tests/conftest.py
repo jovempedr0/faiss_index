@@ -41,6 +41,18 @@ class FakeChatProvider:
         return self.responses.pop(0)
 
 
+class FakeRerankProvider:
+    """Implements providers.RerankProvider: scores driven by a lookup dict (default 0.0)."""
+
+    def __init__(self, scores_by_candidate: dict = None):
+        self.scores_by_candidate = scores_by_candidate or {}
+        self.calls = []  # list of (query, candidates) tuples, one per rerank() call
+
+    def rerank(self, query, candidates):
+        self.calls.append((query, candidates))
+        return [self.scores_by_candidate.get(c, 0.0) for c in candidates]
+
+
 @pytest.fixture
 def fake_embedding_provider():
     return FakeEmbeddingProvider()
@@ -49,6 +61,11 @@ def fake_embedding_provider():
 @pytest.fixture
 def fake_chat_provider():
     return FakeChatProvider()
+
+
+@pytest.fixture
+def fake_rerank_provider():
+    return FakeRerankProvider()
 
 
 @pytest.fixture
