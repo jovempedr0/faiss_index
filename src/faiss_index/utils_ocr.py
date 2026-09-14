@@ -359,22 +359,30 @@ def run_ocr_on_images(images: dict[int, Any], max_workers: int) -> dict[int, str
 
 def merge_ocr_results(all_text: list[str], problematic_pages: list[int], ocr_results: dict[int, str]) -> list[str]:
     """
-    Merges OCR results into a list of texts, replacing or adding texts as needed.
+    Merges OCR results into a list of texts, in original page order.
 
     Parameters:
-        all_text (list[str]): List of original texts, one per page.
-        problematic_pages (list[int]): List of indices of pages considered problematic
-            that may need replacement via OCR.
+        all_text (list[str]): Texts of the valid (non-problematic) pages, compacted
+            in page order (extract_text_from_pdf skips problematic pages rather than
+            leaving a placeholder, so this list is shorter than the page count).
+        problematic_pages (list[int]): Indices of pages considered problematic, to be
+            filled in from `ocr_results` (dropped if OCR produced no text for them).
         ocr_results (dict[int, str]): Dictionary mapping page indices to texts extracted via OCR.
 
     Returns:
-        list[str]: Updated list of texts, with texts replaced or added from the OCR results.
+        list[str]: Texts in original page order, valid pages interleaved with any
+            recovered OCR text for the problematic ones.
     """
+    problematic_set = set(problematic_pages)
+    valid_pages = iter(all_text)
+    merged: list[str] = []
+
     for i in range(len(all_text) + len(problematic_pages)):
-        if i in ocr_results:
-            text = ocr_results[i]
-            if i < len(all_text):
-                all_text[i] = text if text else all_text[i]
-            elif text:
-                all_text.append(text)
-    return all_text
+        if i in problematic_set:
+            text = ocr_results.get(i, "")
+            if text:
+                merged.append(text)
+        else:
+            merged.append(next(valid_pages))
+
+    return merged
