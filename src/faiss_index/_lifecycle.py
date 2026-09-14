@@ -132,7 +132,8 @@ class IndexLifecycleMixin:
         output_dir = Path(output_index_dir) / document_type
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        file_paths = sorted(p for p in base_dir.rglob('*') if p.suffix in self.SUPPORTED_FILE_EXTENSIONS)
+        # Case-insensitive, like read_document: scanned/exported files are often "X.PDF".
+        file_paths = sorted(p for p in base_dir.rglob('*') if p.suffix.lower() in self.SUPPORTED_FILE_EXTENSIONS)
 
         if doc_limit is not None and doc_limit > 0:
             logger.info(_("Found %(total)s matching file(s). Limit of %(doc_limit)s applied.") % {"total": len(file_paths), "doc_limit": doc_limit})

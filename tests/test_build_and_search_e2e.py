@@ -63,3 +63,21 @@ def test_build_load_and_search_roundtrip(make_index, fake_chat_provider, tmp_pat
         str(data_dir / document_type / "doc1.txt"),
         str(data_dir / document_type / "doc2.txt"),
     }
+
+
+def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
+    # Regression test: build_indices filtered files with a case-sensitive
+    # `p.suffix in SUPPORTED_FILE_EXTENSIONS`, so "DOC2.TXT" (or a scanned "X.PDF")
+    # was silently left out of the index, even though read_document handles it fine.
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True)
+    (data_dir / "doctype" / "doc1.txt").write_text("primeiro documento", encoding="utf-8")
+    (data_dir / "doctype" / "DOC2.TXT").write_text("segundo documento", encoding="utf-8")
+    (data_dir / "doctype" / "notes.md").write_text("unsupported extension", encoding="utf-8")
+
+    idx = make_index(embedding_dim=8)
+    fake_chat_provider.responses.append({"sections": []})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+
+    _, metadata, _ = idx.indices["doctype"]["full"]
+    assert {Path(m["file"]).name for m in metadata} == {"doc1.txt", "DOC2.TXT"}
