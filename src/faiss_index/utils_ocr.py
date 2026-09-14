@@ -5,7 +5,6 @@ import pdfplumber
 import tempfile
 import threading
 import pytesseract
-import warnings
 from io import BytesIO
 from pathlib import Path
 
@@ -19,8 +18,6 @@ from concurrent.futures import ThreadPoolExecutor
 from . import config
 from .i18n import _
 from .providers import VisionProvider, OpenAICompatibleChatProvider
-
-warnings.filterwarnings("ignore")
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,28 @@
+import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 from faiss_index import utils_ocr
+
+
+def test_importing_utils_ocr_does_not_silence_the_host_applications_warnings():
+    # Regression test: utils_ocr called warnings.filterwarnings("ignore") at import
+    # time — a process-wide filter that silenced every warning in the host application
+    # (its own UserWarnings, numpy/library DeprecationWarnings...), not just this
+    # module's. Checked in a subprocess, since this test process already imported it.
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    script = "import warnings, faiss_index.utils_ocr; warnings.warn('host app warning', UserWarning)"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(src_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "host app warning" in result.stderr
 
 
 # --- merge_ocr_results ------------------------------------------------------
