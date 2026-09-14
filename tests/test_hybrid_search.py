@@ -162,3 +162,33 @@ def test_reloading_a_strategy_invalidates_bm25_cache(make_index, fake_chat_provi
         str(data_dir / document_type / "c.txt"),
         str(data_dir / document_type / "d.txt"),
     }
+
+
+def test_rebuilding_a_document_type_invalidates_bm25_cache(make_index, fake_chat_provider, tmp_path):
+    # Regression test: build_indices() replaces self.indices[document_type] with the
+    # freshly built indices (no load_indices() needed to search them) but left
+    # evaluate_strategy_hybrid's cached BM25 index built from the *previous* corpus.
+    # BM25 positions from the old corpus were then looked up in the new, shorter
+    # metadata list: wrong documents at best, IndexError at worst.
+    document_type = "doctype"
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "out"
+    (data_dir / document_type).mkdir(parents=True)
+    (data_dir / document_type / "a.txt").write_text("gato preto no quintal", encoding="utf-8")
+    (data_dir / document_type / "b.txt").write_text("cachorro branco latindo", encoding="utf-8")
+    (data_dir / document_type / "c.txt").write_text("cavalo marrom correndo", encoding="utf-8")
+
+    idx = make_index(embedding_dim=8)
+    fake_chat_provider.responses.append({"sections": []})  # no structure -> skip "sections"
+    idx.build_indices(document_type=document_type, base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+    idx.evaluate_strategy_hybrid("cavalo marrom", document_type, "chunks", k=5)  # BM25 cache over 3 chunks
+
+    for f in (data_dir / document_type).iterdir():
+        f.unlink()
+    (data_dir / document_type / "d.txt").write_text("processo judicial numero um", encoding="utf-8")
+    idx.build_indices(document_type=document_type, base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+
+    results = idx.evaluate_strategy_hybrid("cavalo marrom", document_type, "chunks", k=5)
+
+    assert [r["metadata"]["file"] for r in results["results"]] == [str(data_dir / document_type / "d.txt")]
+    assert idx._bm25_indices[document_type]["chunks"].corpus_size == 1

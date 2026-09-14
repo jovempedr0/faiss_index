@@ -176,6 +176,9 @@ class IndexLifecycleMixin:
                 logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
 
         self.indices[document_type] = {}
+        # Stale otherwise: evaluate_strategy_hybrid's cached BM25 indices for this
+        # document_type were built from the metadata being replaced right here.
+        self._bm25_indices.pop(document_type, None)
 
         # Iterates over the strategies and applies the creation/save logic
         for strategy, (embeddings, meta) in embeddings_map.items():
