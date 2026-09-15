@@ -40,7 +40,7 @@ def test_get_embeddings_empty_text_becomes_zero_vector(make_index):
 
 def test_create_embeddings_full_is_the_normalized_mean_of_its_normalized_chunks(make_index):
     idx = make_index(embedding_dim=4)
-    docs = [("doc.txt", " ".join(f"palavra{i}" for i in range(600)))]  # 3 chunks (0, 250, 500)
+    docs = [("doc.txt", " ".join(f"palavra{i}" for i in range(1000)))]  # 3 chunks (0, 250, 500)
     chunk_embeddings, chunk_metadata = idx.create_embeddings_chunks(docs)
     assert len(chunk_metadata) == 3
 
@@ -52,6 +52,25 @@ def test_create_embeddings_full_is_the_normalized_mean_of_its_normalized_chunks(
     expected /= np.linalg.norm(expected)
     assert np.allclose(full_embeddings[0], expected)
     assert np.isclose(np.linalg.norm(full_embeddings[0]), 1.0)
+
+
+def test_create_embeddings_chunks_has_no_window_contained_in_the_previous_one(make_index):
+    # Regression test: windows started every chunk_size // 2 words all the way to the end,
+    # so each document's last window (or two, for odd chunk sizes) sat entirely inside the
+    # previous one — a wasted embedding and a duplicate hit, on every document.
+    idx = make_index(embedding_dim=4)
+    for n_words, chunk_size, expected_windows in [
+        (1000, 500, [(0, 500), (250, 750), (500, 1000)]),
+        (600, 500, [(0, 500), (250, 600)]),
+        (300, 500, [(0, 300)]),
+        (12, 5, [(0, 5), (2, 7), (4, 9), (6, 11), (8, 12)]),
+    ]:
+        words = [f"w{i}" for i in range(n_words)]
+
+        _, metadata = idx.create_embeddings_chunks([("doc.txt", " ".join(words))], chunk_size=chunk_size)
+
+        assert [m["chunk_text"] for m in metadata] == [" ".join(words[a:b]) for a, b in expected_windows]
+        assert [m["chunk_index"] for m in metadata] == list(range(len(expected_windows)))
 
 
 def test_create_embeddings_full_covers_text_past_the_embedding_input_limit(make_index):

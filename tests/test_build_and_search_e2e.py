@@ -71,7 +71,7 @@ def test_build_indices_embeds_chunks_once_and_pools_full_from_them(
 ):
     data_dir = tmp_path / "data"
     (data_dir / "doctype").mkdir(parents=True)
-    (data_dir / "doctype" / "doc1.txt").write_text(" ".join(f"a{i}" for i in range(600)), encoding="utf-8")
+    (data_dir / "doctype" / "doc1.txt").write_text(" ".join(f"a{i}" for i in range(1000)), encoding="utf-8")
     (data_dir / "doctype" / "doc2.txt").write_text("documento curto", encoding="utf-8")
 
     idx = make_index(embedding_dim=8)

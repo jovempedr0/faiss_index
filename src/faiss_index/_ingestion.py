@@ -246,7 +246,13 @@ class DocumentIngestionMixin:
 
         for file_path, content in docs:
             words = content.split()
-            chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size//2)]
+            chunks = []
+            for start in range(0, len(words), chunk_size // 2):
+                chunks.append(' '.join(words[start:start + chunk_size]))
+                if start + chunk_size >= len(words):
+                    # This window already reaches the end of the document: any later
+                    # start would only produce a window entirely contained in this one.
+                    break
 
             for i, chunk in enumerate(chunks):
                 if chunk:
