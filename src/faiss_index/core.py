@@ -4,6 +4,7 @@ import warnings
 from typing import Dict, List, Optional, Tuple
 
 import faiss
+import numpy as np
 from rank_bm25 import BM25Okapi
 
 from . import config
@@ -163,6 +164,9 @@ class FaissDocumentIndex(
         # Lazily built (from already-loaded metadata) and cached per document_type/strategy
         # the first time evaluate_strategy_hybrid is called for that combination.
         self._bm25_indices: Dict[str, Dict[str, BM25Okapi]] = {}
+        # Embedding rows appended by add_new_documents since each strategy was built/loaded,
+        # per document_type/strategy — written out (and cleared) by save_indices.
+        self._unsaved_embeddings: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.embedding_batch_size = embedding_batch_size
         self.embedding_query_prefix = embedding_query_prefix
         self.embedding_document_prefix = embedding_document_prefix

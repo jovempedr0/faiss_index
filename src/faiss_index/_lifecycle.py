@@ -96,15 +96,102 @@ class IndexLifecycleMixin:
         logger.info(_("Building and saving index for strategy: '%(strategy_name)s'...") % {"strategy_name": strategy_name})
         index = self._build_faiss_index(embeddings)
 
-        faiss.write_index(index, str(output_dir / f"{document_type}_{strategy_name}.index"))
-        with open(output_dir / f"{document_type}_{strategy_name}_metadata.json", "w", encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=4)
-        np.save(output_dir / f"{document_type}_{strategy_name}_embeddings.npy", embeddings)
-        with open(output_dir / f"{document_type}_{strategy_name}_embedding.json", "w", encoding='utf-8') as f:
-            json.dump({"document_prefix": self.embedding_document_prefix}, f, ensure_ascii=False, indent=4)
+        self._write_strategy_files(document_type, strategy_name, index, metadata, [embeddings], output_dir)
 
         logger.info(_("Index for '%(strategy_name)s' saved successfully.") % {"strategy_name": strategy_name})
         return index, metadata, embeddings
+
+    def _write_strategy_files(
+        self, document_type: str, strategy: str, index: faiss.Index, metadata: list,
+        embedding_blocks: List[np.ndarray], output_dir: Path
+    ) -> Path:
+        """
+        Writes one strategy's files in the layout `load_indices` reads: the FAISS index,
+        its metadata, the embedding rows (the concatenation of `embedding_blocks`, as
+        float32) and the document prefix they were embedded with. Returns the path of the
+        written embeddings file.
+        """
+        cpu_index = faiss.index_gpu_to_cpu(index) if FAISS_HAS_GPU_SUPPORT and isinstance(index, faiss.GpuIndex) else index
+        faiss.write_index(cpu_index, str(output_dir / f"{document_type}_{strategy}.index"))
+        with open(output_dir / f"{document_type}_{strategy}_metadata.json", "w", encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=4)
+
+        # Streamed into a temporary file, then swapped in: one of the blocks may be a
+        # memory map of the very file being replaced (saving over the directory an index
+        # was loaded from), and this never needs all the rows in RAM at once.
+        embeddings_path = output_dir / f"{document_type}_{strategy}_embeddings.npy"
+        temporary_path = output_dir / f"{document_type}_{strategy}_embeddings.tmp.npy"
+        rows = np.lib.format.open_memmap(
+            temporary_path, mode="w+", dtype=np.float32,
+            shape=(sum(len(block) for block in embedding_blocks), self.embedding_dim),
+        )
+        offset = 0
+        for block in embedding_blocks:
+            rows[offset:offset + len(block)] = block
+            offset += len(block)
+        rows.flush()
+        del rows
+        os.replace(temporary_path, embeddings_path)
+
+        with open(output_dir / f"{document_type}_{strategy}_embedding.json", "w", encoding='utf-8') as f:
+            json.dump({"document_prefix": self.embedding_document_prefix}, f, ensure_ascii=False, indent=4)
+        return embeddings_path
+
+    def save_indices(self, document_type: str, output_index_dir: str = config.DEFAULT_OUTPUT_INDEX_DIR) -> None:
+        """
+        Persists the in-memory indices of `document_type` — including every document added
+        with `add_new_documents` since they were built or loaded — in the layout
+        `load_indices` reads (`<output_index_dir>/<document_type>/`), plus its calibrated
+        section schema, if any. Saving over the directory the indices were loaded from is safe.
+
+        Parameters:
+            document_type (str): Document type whose loaded strategies are saved.
+            output_index_dir (str): Base directory to save into.
+
+        Raises:
+            ValueError: If no index is loaded for `document_type`, or a strategy's index,
+                metadata and embedding rows don't line up (nothing is written for it then).
+        """
+        if document_type not in self.indices:
+            raise ValueError(f"No index loaded for document type '{document_type}'.")
+
+        output_dir = Path(output_index_dir) / document_type
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._save_section_schema(document_type, output_dir)
+
+        for strategy, (index, metadata, embeddings) in list(self.indices[document_type].items()):
+            if index is None:
+                continue
+            unsaved = self._unsaved_embeddings.get(document_type, {}).get(strategy, [])
+            blocks = ([embeddings] if embeddings is not None else []) + unsaved
+            row_count = sum(len(block) for block in blocks)
+            if not (row_count == index.ntotal == len(metadata)):
+                raise ValueError(
+                    f"Can't save '{document_type}/{strategy}': the index has {index.ntotal} vectors, "
+                    f"the metadata {len(metadata)} entries and the embeddings {row_count} rows."
+                )
+
+            embeddings_path = self._write_strategy_files(document_type, strategy, index, metadata, blocks, output_dir)
+            self._unsaved_embeddings.get(document_type, {}).pop(strategy, None)
+            # Every row now lives in the saved file: map it, as load_indices would.
+            self.indices[document_type][strategy] = (index, metadata, np.load(embeddings_path, mmap_mode="r"))
+            logger.info(
+                _("Strategy '%(strategy)s' of '%(document_type)s' saved to '%(output_dir)s' (%(ntotal)s vectors).")
+                % {"strategy": strategy, "document_type": document_type, "output_dir": output_dir, "ntotal": index.ntotal}
+            )
+
+    def _discard_derived_state(self, document_type: str, strategy: Optional[str] = None) -> None:
+        """
+        Drops what's derived from a strategy's in-memory index — its cached BM25 index
+        (see evaluate_strategy_hybrid) and the embedding rows added since it was saved
+        (see add_new_documents) — whenever that index is replaced or removed. With
+        `strategy=None`, for every strategy of the document type.
+        """
+        for per_document_type in (self._bm25_indices, self._unsaved_embeddings):
+            if strategy is None:
+                per_document_type.pop(document_type, None)
+            else:
+                per_document_type.get(document_type, {}).pop(strategy, None)
 
     def build_indices(
         self,
@@ -177,9 +264,9 @@ class IndexLifecycleMixin:
                 logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
 
         self.indices[document_type] = {}
-        # Stale otherwise: evaluate_strategy_hybrid's cached BM25 indices for this
-        # document_type were built from the metadata being replaced right here.
-        self._bm25_indices.pop(document_type, None)
+        # Stale otherwise: the cached BM25 indices / unsaved rows for this document_type
+        # belong to the indices being replaced right here.
+        self._discard_derived_state(document_type)
 
         # Iterates over the strategies and applies the creation/save logic
         for strategy, (embeddings, meta) in embeddings_map.items():
@@ -304,8 +391,8 @@ class IndexLifecycleMixin:
             loaded_data[document_type][strategy] = loaded_tuple
             # Stale otherwise: a strategy already loaded that gets reloaded here (no
             # unload_indices() in between) would keep evaluate_strategy_hybrid's cached
-            # BM25 index pointing at the previous metadata list.
-            self._bm25_indices.get(document_type, {}).pop(strategy, None)
+            # BM25 index — and any unsaved added rows — tied to the previous index.
+            self._discard_derived_state(document_type, strategy)
 
             device = (
                 "GPU"
@@ -367,8 +454,8 @@ class IndexLifecycleMixin:
                 del self.indices[document_type][strategy]
                 # Stale otherwise: a future load_indices() for the same document_type/
                 # strategy could point at different metadata than what the BM25 index
-                # (see evaluate_strategy_hybrid) was built from.
-                self._bm25_indices.get(document_type, {}).pop(strategy, None)
+                # (see evaluate_strategy_hybrid) or the unsaved rows belong to.
+                self._discard_derived_state(document_type, strategy)
                 logger.info(_("Success: Strategy '%(strategy)s' for '%(document_type)s' has been unloaded.") % {"strategy": strategy, "document_type": document_type})
 
                 # If the strategies dict becomes empty, also remove the document_type
@@ -382,7 +469,7 @@ class IndexLifecycleMixin:
         else:
             # Removes the reference to the whole strategies dict
             del self.indices[document_type]
-            self._bm25_indices.pop(document_type, None)
+            self._discard_derived_state(document_type)
             logger.info(_("Success: All indices for '%(document_type)s' have been unloaded.") % {"document_type": document_type})
 
         gc.collect()
@@ -390,7 +477,8 @@ class IndexLifecycleMixin:
     def add_new_documents(self, document_type: str, new_docs: List[Tuple[str, str]]) -> None:
         """
         Adds new documents to an existing FAISS index for a specific document type.
-        This updates the index, the metadata, and the embeddings with the new documents provided.
+        This updates the index and the metadata in memory with the new documents provided;
+        `save_indices` persists them (embedding rows included).
 
         Parameters:
             document_type (str): The document type the new documents belong to.
@@ -427,11 +515,14 @@ class IndexLifecycleMixin:
             # called on index creation/load, keeps index.reconstruct(i) working for the new vectors)
             index.add(new_embeddings.astype('float32'))
 
-            # Updates the metadata. We don't np.vstack the embeddings array: it may be
-            # memory-mapped from disk (mmap_mode="r") and vstack would force materializing
-            # all of it into RAM. evaluate_strategy already reads vectors via
-            # index.reconstruct(), so this array doesn't need to stay up to date for search to work correctly.
             metadata.extend(new_metadata)
+            # The new rows are kept aside rather than np.vstack'ed onto `embeddings`: that
+            # array may be memory-mapped from disk (mmap_mode="r") and vstack would
+            # materialize all of it into RAM. Search doesn't need them (evaluate_strategy
+            # reads vectors via index.reconstruct()); save_indices appends them on write.
+            self._unsaved_embeddings.setdefault(document_type, {}).setdefault(strategy, []).append(
+                new_embeddings.astype(np.float32)
+            )
 
             # Updates the tuple in the indices structure (embeddings kept as-is)
             self.indices[document_type][strategy] = (index, metadata, embeddings)
@@ -462,6 +553,7 @@ class IndexLifecycleMixin:
         # Removes the reference to the whole indices dict
         self.indices.clear()
         self._bm25_indices.clear()
+        self._unsaved_embeddings.clear()
 
         # Calls the garbage collector to free memory as quickly as possible
         gc.collect()

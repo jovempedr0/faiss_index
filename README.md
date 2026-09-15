@@ -446,15 +446,18 @@ idx.load_indices(path_indices="./faiss_index", document_types=["contract"], stra
 
 new_docs = [("./data/contract/2026-01/new.pdf", extracted_text)]
 idx.add_new_documents(document_type="contract", new_docs=new_docs)
+idx.save_indices(document_type="contract", output_index_dir="./faiss_index")  # persist
 ```
 
 The new documents' chunks are embedded once and shared by `full` and `chunks` —
 with only `full` loaded, they're still embedded (one call per ~250 words, not one per
 document), since that's what the `full` vector is pooled from.
 
-This updates the indices **in memory**; to persist to disk, run `build_indices`
-again (or save the index/metadata manually, following the
-[file layout](#on-disk-file-layout)).
+`add_new_documents` updates the indices **in memory**; `save_indices` writes every
+loaded strategy of the document type back to disk (index, metadata, embedding rows —
+including the added ones — and the section schema), in the layout `load_indices`
+reads. Saving over the directory the indices were loaded from is safe. Reloading or
+unloading a strategy before saving discards what was added to it.
 
 ### Managing memory in long-running processes
 
@@ -555,6 +558,11 @@ OpenAI-compatible path) — see
   Checks whether all requested combinations are already loaded (and moved to the GPU
   via CUDA, if `require_gpu=True`).
 
+- **`save_indices(document_type, output_index_dir=config.DEFAULT_OUTPUT_INDEX_DIR)`**
+  Persists the loaded strategies of `document_type`, including documents added with
+  `add_new_documents`, in the [on-disk layout](#on-disk-file-layout). Raises
+  `ValueError` if a strategy's index, metadata and embedding rows don't line up.
+
 - **`unload_indices(document_type, strategy=None)`** / **`unload_all_indices()`**
   Frees indices from memory.
 
@@ -590,7 +598,8 @@ The `*_embedding.json` files are optional on load (indices saved before they exi
 are treated as built without a document prefix).
 
 `load_indices(path_indices=..., document_types=[...])` expects exactly this layout
-(one subfolder per `document_type` inside `path_indices`).
+(one subfolder per `document_type` inside `path_indices`); `build_indices` and
+`save_indices` write it.
 
 ## Performance configuration
 
