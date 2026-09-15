@@ -40,6 +40,15 @@ class SearchMixin:
         if cached is not None:
             return cached
 
+        # Built under a lock per document_type/strategy, checking the cache again inside
+        # it: concurrent hybrid searches that all found it missing would otherwise each
+        # tokenize the whole corpus again. Once cached, the check above skips the lock.
+        with self._keyed_lock("bm25", document_type, strategy):
+            cached = self._bm25_indices.get(document_type, {}).get(strategy)
+            return cached if cached is not None else self._build_bm25_index(document_type, strategy)
+
+    def _build_bm25_index(self, document_type: str, strategy: str) -> BM25Okapi:
+        """Builds and caches `_get_bm25_index`'s BM25 index for `document_type`/`strategy`."""
         _, metadata, _embeddings = self.indices[document_type][strategy]
         corpus = [self._tokenize_for_bm25(self._extract_metadata_text(m)) for m in metadata]
         bm25 = BM25Okapi(corpus)

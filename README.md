@@ -285,7 +285,8 @@ The BM25 side is built lazily, in memory, from the metadata already loaded for t
 `document_type`/`strategy` (no extra files on disk, no LLM/embedding calls) and cached
 on the instance — invalidated automatically by `add_new_documents`/`unload_indices`/
 `load_indices`/`build_indices` (reloading or rebuilding a strategy already in memory
-drops its stale BM25 index too, not just adding/removing one).
+drops its stale BM25 index too, not just adding/removing one). Concurrent hybrid
+searches that find it not built yet build it once: the others wait for it.
 Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
 (whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
 `similarity`.

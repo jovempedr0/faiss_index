@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 import pytest
 
-from faiss_index import config
+from faiss_index import _search as search_module, config
 
 
 def _build_chunks_index(idx, texts):
@@ -312,6 +312,42 @@ def test_generate_search_by_type_loading_one_index_does_not_block_searches_on_an
 
     assert full == ["texto um"]
     assert searched_while_chunks_was_loading
+
+
+def test_generate_search_by_type_concurrent_hybrid_searches_build_bm25_once(make_index, monkeypatch):
+    # Regression test: every concurrent hybrid search that found no cached BM25 index
+    # built its own, tokenizing the whole corpus again (8 requests: 8 builds).
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois", "texto tres"])
+    n_requests = 8
+    found_it_missing, everyone_found_it_missing, builds = set(), threading.Event(), []
+
+    class RecordsMisses(dict):
+        def get(self, document_type, default=None):
+            per_strategy = super().get(document_type, default)
+            if "chunks" not in (per_strategy or {}):
+                found_it_missing.add(threading.get_ident())
+                if len(found_it_missing) == n_requests:
+                    everyone_found_it_missing.set()
+            return per_strategy
+
+    class HeldBackBM25(search_module.BM25Okapi):
+        def __init__(self, corpus):
+            # Holds the build back until every search has found the BM25 index missing,
+            # so all of them are in the race whatever the thread scheduling.
+            builds.append(everyone_found_it_missing.wait(timeout=10))
+            super().__init__(corpus)
+
+    idx._bm25_indices = RecordsMisses()
+    monkeypatch.setattr(search_module, "BM25Okapi", HeldBackBM25)
+
+    results, errors = _run_concurrently(
+        n_requests, lambda: idx.generate_search_by_type("texto dois", "doctype", "chunks", require_gpu=False, k=3, use_hybrid=True)
+    )
+
+    assert errors == []
+    assert builds == [True]
+    assert all(chunks == results[0] and len(chunks) == 3 for chunks in results)
 
 
 def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
