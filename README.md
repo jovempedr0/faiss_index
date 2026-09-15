@@ -105,6 +105,15 @@ still ranks by cosine similarity, like the other strategies. `build_indices` poo
 the embeddings it already computed for `chunks`, so `full` costs no extra embedding
 calls.
 
+A `sections` vector is pooled the same way, from the section's own ~500-word windows
+(embedded with the document prefix): sections easily run past
+`MAX_EMBEDDING_INPUT_CHARS` (35 of 113 on a real 23-document legal corpus, up to ~420k
+characters), and a single embedding call only represented their beginning. On that
+corpus this took `sections` from 65% to 81% file recall@5 with dense search (hybrid:
+86% → 89%, passage recall 70% → 74%). It costs one embedding call per window instead
+of one per section; `sections` indices built before this still load and search as
+before — rebuild them to get the pooled vectors.
+
 ### LLM-calibrated section schema
 
 The `sections` strategy **doesn't assume any fixed document structure**. Before it

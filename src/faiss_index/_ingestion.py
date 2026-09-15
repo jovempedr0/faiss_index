@@ -23,6 +23,32 @@ def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
     return vectors / np.maximum(norms, 1e-12)
 
 
+def _mean_pool(vectors: np.ndarray) -> np.ndarray:
+    """
+    One vector standing for several embeddings of pieces of the same text: the mean of
+    the L2-normalized rows, L2-normalized again — see `create_embeddings_full` for why
+    both normalizations matter.
+    """
+    return _l2_normalize(_l2_normalize(vectors).mean(axis=0))
+
+
+def _word_windows(text: str, chunk_size: int) -> List[str]:
+    """
+    Splits `text` into windows of `chunk_size` words overlapping by half, the last one
+    reaching the end of the text — the "chunks" strategy's windows, also pooled into
+    each section's vector (`_embed_pooled_windows`).
+    """
+    words = text.split()
+    windows = []
+    for start in range(0, len(words), chunk_size // 2):
+        windows.append(' '.join(words[start:start + chunk_size]))
+        if start + chunk_size >= len(words):
+            # This window already reaches the end of the document: any later
+            # start would only produce a window entirely contained in this one.
+            break
+    return windows
+
+
 class DocumentIngestionMixin:
 
     def get_embeddings(self, texts: List[str], prefix: str = "") -> np.ndarray:
@@ -149,7 +175,7 @@ class DocumentIngestionMixin:
         for i, (file_path, _content) in enumerate(docs):
             rows = rows_by_file.get(file_path)
             if rows:
-                embeddings[i] = _l2_normalize(_l2_normalize(chunk_embeddings[rows]).mean(axis=0))
+                embeddings[i] = _mean_pool(chunk_embeddings[rows])
 
         # Each entry stores ONLY that document's own text (a 1-element list).
         # Previously the whole corpus (every doc's text) was stored in every entry, which made
@@ -223,8 +249,34 @@ class DocumentIngestionMixin:
                         "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
                     })
 
-        embeddings = self.get_embeddings(all_texts, prefix=self.embedding_document_prefix)
-        return embeddings, all_metadata
+        return self._embed_pooled_windows(all_texts), all_metadata
+
+    def _embed_pooled_windows(self, texts: List[str]) -> np.ndarray:
+        """
+        One vector per text, covering all of it: the text is split into the same
+        `DEFAULT_CHUNK_SIZE_WORDS`-word windows as "chunks", and its vector is the
+        pooled mean of their (document-prefixed) embeddings — `_mean_pool`, as in
+        "full". Embedding a section in a single call only represented its first
+        `MAX_EMBEDDING_INPUT_CHARS` characters, and sections run far past that (35 of
+        113 in a real legal corpus, up to ~420k characters). Short sections go through
+        the same path (one window each) rather than being embedded as-is, which
+        measured the same or slightly better on that corpus and keeps a single rule.
+        A text with no words gets a zero vector.
+        """
+        windows: List[str] = []
+        rows_by_text: List[range] = []
+        for text in texts:
+            text_windows = _word_windows(text, constants.DEFAULT_CHUNK_SIZE_WORDS)
+            rows_by_text.append(range(len(windows), len(windows) + len(text_windows)))
+            windows.extend(text_windows)
+
+        window_embeddings = self.get_embeddings(windows, prefix=self.embedding_document_prefix)
+
+        embeddings = np.zeros((len(texts), self.embedding_dim), dtype=np.float32)
+        for i, rows in enumerate(rows_by_text):
+            if rows:
+                embeddings[i] = _mean_pool(window_embeddings[rows.start:rows.stop])
+        return embeddings
 
     def create_embeddings_chunks(self, docs: List[Tuple[str, str]], chunk_size: int = constants.DEFAULT_CHUNK_SIZE_WORDS) -> Tuple[np.ndarray, List]:
         """
@@ -245,14 +297,7 @@ class DocumentIngestionMixin:
         all_metadata = []
 
         for file_path, content in docs:
-            words = content.split()
-            chunks = []
-            for start in range(0, len(words), chunk_size // 2):
-                chunks.append(' '.join(words[start:start + chunk_size]))
-                if start + chunk_size >= len(words):
-                    # This window already reaches the end of the document: any later
-                    # start would only produce a window entirely contained in this one.
-                    break
+            chunks = _word_windows(content, chunk_size)
 
             for i, chunk in enumerate(chunks):
                 if chunk:
