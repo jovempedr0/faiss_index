@@ -1,3 +1,5 @@
+import unicodedata
+
 import numpy as np
 import faiss
 
@@ -22,6 +24,25 @@ def test_evaluate_strategy_hybrid_missing_index_returns_empty_dict(make_index):
 def test_tokenize_for_bm25_normalizes_like_clean_text(make_index):
     idx = make_index()
     assert idx._tokenize_for_bm25("Contratos, PAGAMENTOS!!") == ["contratos", "pagamentos"]
+
+
+def test_tokenize_for_bm25_folds_accents_including_stopwords(make_index):
+    idx = make_index()
+    expected = ["execucao", "sentenca", "valida"]
+    assert idx._tokenize_for_bm25("A execução da sentença não é válida") == expected
+    assert idx._tokenize_for_bm25("A execucao da sentenca nao e valida") == expected
+    # Decomposed (NFD) accents, as some PDF text extraction emits them.
+    assert idx._tokenize_for_bm25(unicodedata.normalize("NFD", "A execução da sentença não é válida")) == expected
+
+
+def test_bm25_matches_accentless_query_against_accented_corpus(make_index):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["pedido de execução da sentença", "outro texto qualquer", "mais um texto"])
+
+    bm25 = idx._get_bm25_index("doctype", "chunks")
+    scores = bm25.get_scores(idx._tokenize_for_bm25("execucao sentenca"))
+    assert scores[0] > 0
+    assert scores[1] == scores[2] == 0
 
 
 def test_get_bm25_index_is_cached(make_index):

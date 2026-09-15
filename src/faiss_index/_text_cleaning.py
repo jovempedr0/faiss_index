@@ -7,8 +7,32 @@ on the class) so `_search.py` can import them without a circular import back int
 `core.py`.
 """
 import re
+import unicodedata
 
 from . import config
+
+
+def _fold_accents(text: str) -> str:
+    """
+    Strips diacritics ("não" -> "nao", "execução" -> "execucao"): NFKD-decomposes the
+    text and drops the combining marks. The compatibility decomposition also splits
+    ligatures PDF text extraction often leaves behind ("ﬁ" -> "fi").
+    """
+    return "".join(char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char))
+
+
+# config.STOPWORDS_PT with accents folded, to filter tokens that were folded too — NLTK's
+# list spells "não"/"é"/"já"/"você" with accents, so the folded "nao"/"e"/"ja"/"voce"
+# would otherwise slip through as content words.
+_FOLDED_STOPWORDS_PT = frozenset(_fold_accents(word) for word in config.STOPWORDS_PT)
+
+
+def tokenize_accent_folded(text: str) -> list[str]:
+    """
+    `clean_text`'s tokens with accents folded (and stopwords removed in their folded
+    form as well) — so a text typed with or without accents yields the same tokens.
+    """
+    return [token for token in clean_text(_fold_accents(text))[0].split() if token not in _FOLDED_STOPWORDS_PT]
 
 
 def remove_stop_words(sentence:str) -> str:
