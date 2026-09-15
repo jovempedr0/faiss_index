@@ -37,10 +37,12 @@ class DocumentIngestionMixin:
                 `embedding_query_prefix`/`embedding_document_prefix` are applied.
 
         Returns:
-            np.ndarray: A numpy array with the embeddings generated for each text, in the
-                        same order as `texts` (1 row per text — texts that end up empty
-                        after cleaning get a zero vector, to preserve alignment with
-                        metadata in the create_embeddings_* callers).
+            np.ndarray: A float32 numpy array with the embeddings generated for each text,
+                        in the same order as `texts` (1 row per text — texts that end up
+                        empty after cleaning get a zero vector, to preserve alignment
+                        with metadata in the create_embeddings_* callers). float32 is
+                        what FAISS indexes anyway; float64 only doubled memory and the
+                        saved `.npy` size.
         """
         cleaned_texts = []
         for text in texts:
@@ -70,7 +72,7 @@ class DocumentIngestionMixin:
                     logger.warning(_("Text became empty after cleaning; using a zero vector to preserve alignment with metadata."))
                     embeddings[i] = [0.0] * self.embedding_dim
 
-        return np.array(embeddings)
+        return np.array(embeddings, dtype=np.float32)
 
     def read_document(self, file_path: str) -> str:
         """
@@ -143,7 +145,7 @@ class DocumentIngestionMixin:
         for row, chunk_meta in enumerate(chunk_metadata):
             rows_by_file[chunk_meta["file"]].append(row)
 
-        embeddings = np.zeros((len(docs), self.embedding_dim))
+        embeddings = np.zeros((len(docs), self.embedding_dim), dtype=np.float32)
         for i, (file_path, _content) in enumerate(docs):
             rows = rows_by_file.get(file_path)
             if rows:

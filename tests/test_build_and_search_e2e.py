@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 
 def test_build_load_and_search_roundtrip(make_index, fake_chat_provider, tmp_path):
     document_type = "doctype"
@@ -147,6 +148,19 @@ def test_section_metadata_does_not_repeat_the_whole_document(make_index, fake_ch
     assert {m["section_name"] for m in section_metadata} == {"cabecalho", "corpo"}
     assert all("content" not in m for m in section_metadata)
     assert full_metadata[0]["file"] == section_metadata[0]["file"]  # whole text still reachable via "full"
+
+
+def test_embeddings_are_float32_in_memory_and_on_disk(make_index, fake_chat_provider, tmp_path):
+    # Regression test: get_embeddings built a float64 array (and so did the pooled "full"
+    # vectors), doubling build-time memory and the saved .npy size for no gain — FAISS
+    # indexes float32 either way.
+    idx = make_index(embedding_dim=8)
+    out = _build_txt_corpus(idx, fake_chat_provider, tmp_path, ["Cabecalho\ncorpo sobre contratos", "Cabecalho\ncorpo sobre pagamentos"])
+
+    assert idx.get_embeddings(["um texto"]).dtype == np.float32
+    for strategy in ("full", "sections", "chunks"):
+        assert idx.indices["doctype"][strategy][2].dtype == np.float32
+        assert np.load(out / "doctype" / f"doctype_{strategy}_embeddings.npy").dtype == np.float32
 
 
 def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
