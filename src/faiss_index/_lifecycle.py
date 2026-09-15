@@ -87,7 +87,8 @@ class IndexLifecycleMixin:
             output_dir (Path): Directory where the index files will be saved.
 
         Returns:
-            tuple: A tuple with the FAISS index, the metadata, and the embeddings.
+            tuple: A tuple with the FAISS index, the metadata, and the embeddings —
+                `(None, [], None)` if there are no embeddings (nothing is written then).
         """
         if embeddings.shape[0] == 0:
             logger.warning(_("No embeddings generated for strategy '%(strategy_name)s'. Skipping.") % {"strategy_name": strategy_name})
@@ -270,8 +271,13 @@ class IndexLifecycleMixin:
 
         # Iterates over the strategies and applies the creation/save logic
         for strategy, (embeddings, meta) in embeddings_map.items():
-            result = self._create_and_save_index(strategy, embeddings, meta, document_type, output_dir)
-            self.indices[document_type][strategy] = result
+            index, metadata, stored_embeddings = self._create_and_save_index(strategy, embeddings, meta, document_type, output_dir)
+            if index is None:
+                # No vectors (e.g. no document had a section): not registered as loaded,
+                # so searching it behaves like any strategy that was never built instead
+                # of failing on a None index.
+                continue
+            self.indices[document_type][strategy] = (index, metadata, stored_embeddings)
 
         logger.info(_("Index construction for '%(document_type)s' complete.") % {"document_type": document_type})
 
