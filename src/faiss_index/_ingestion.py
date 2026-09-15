@@ -184,9 +184,7 @@ class DocumentIngestionMixin:
         Parameters:
             docs (List[Tuple[str, str]]): List of tuples with the file path and the
                 document's content (the content itself isn't used for extraction here
-                — the provider re-reads the file directly to see its real layout —
-                but is still recorded in each section's metadata, same as
-                `create_embeddings_sections`).
+                — the provider re-reads the file directly to see its real layout).
 
         Returns:
             Tuple[np.ndarray, List]: Same shape as `create_embeddings_sections`.
@@ -212,12 +210,14 @@ class DocumentIngestionMixin:
             for section_name, section_text in sections.items():
                 if section_text and section_name != "completo":
                     all_texts.append(section_text)
+                    # No copy of the whole document here: with one entry per section it
+                    # multiplied the metadata file several times over. The full text
+                    # lives once per file in the "full" strategy's metadata (same "file").
                     all_metadata.append({
                         "file": file_path,
                         "section_name": section_name,
                         "type": "section",
                         "section_text": section_text,
-                        "content": content,
                         "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
                     })
 

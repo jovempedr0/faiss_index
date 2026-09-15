@@ -134,6 +134,21 @@ def test_load_indices_warns_when_saved_document_prefix_differs(make_index, fake_
     assert "embedding_document_prefix=''" in caplog.text
 
 
+def test_section_metadata_does_not_repeat_the_whole_document(make_index, fake_chat_provider, tmp_path):
+    # Regression test: every section entry stored the entire document under "content",
+    # so the sections metadata grew with (sections per document) x (document size) —
+    # 12.3 of 14.7 MB on a real 23-document corpus.
+    idx = make_index(embedding_dim=8)
+    _build_txt_corpus(idx, fake_chat_provider, tmp_path, ["Cabecalho\ncorpo do documento " + "texto " * 200])
+
+    _, section_metadata, _ = idx.indices["doctype"]["sections"]
+    _, full_metadata, _ = idx.indices["doctype"]["full"]
+
+    assert {m["section_name"] for m in section_metadata} == {"cabecalho", "corpo"}
+    assert all("content" not in m for m in section_metadata)
+    assert full_metadata[0]["file"] == section_metadata[0]["file"]  # whole text still reachable via "full"
+
+
 def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
     # Regression test: build_indices filtered files with a case-sensitive
     # `p.suffix in SUPPORTED_FILE_EXTENSIONS`, so "DOC2.TXT" (or a scanned "X.PDF")

@@ -93,6 +93,11 @@ The same instance can index and search across multiple document types at once
 | `sections` | Each structural section of the document | `section_name`, `section_text` |
 | `chunks` | ~500-word windows, with 50% overlap | `chunk_index`, `chunk_text` |
 
+Every metadata entry also carries `file`. To expand a section or chunk hit into its
+whole document, look the `file` up in the `full` strategy's metadata — the full text is
+stored once per file there (section entries used to repeat it in a `content` key, which
+multiplied the size of the sections metadata; indices saved with it still load fine).
+
 A `full` vector is the mean of the document's chunk embeddings, L2-normalized before
 and after averaging — so it represents the entire text (a single embedding call would
 only see the first `MAX_EMBEDDING_INPUT_CHARS` characters), and L2 search over `full`
