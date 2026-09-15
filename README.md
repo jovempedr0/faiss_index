@@ -531,7 +531,8 @@ OpenAI-compatible path) — see
   Measures each strategy against queries with known answers (`{"query",
   "relevant_files", "relevant_text"?}`): `recall_at_k`, `mrr`, `passage_recall_at_k`
   and `avg_result_chars`. The way to pick a strategy — see
-  [Comparing strategies](#comparing-strategies-and-picking-the-best-one).
+  [Comparing strategies](#comparing-strategies-and-picking-the-best-one). Raises
+  `ValueError` if one of `strategies` isn't loaded for `document_type`.
 
 - **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`** — *deprecated*
   Scores each strategy (speed, distance/RRF score, variance, file diversity, and,
