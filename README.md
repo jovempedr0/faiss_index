@@ -504,7 +504,8 @@ OpenAI-compatible path) — see
 
 - **`add_new_documents(document_type, new_docs)`**
   Adds new documents (`List[Tuple[path, text]]`) to already-loaded indices, for
-  every strategy that already exists for that `document_type`.
+  every strategy that already exists for that `document_type`. Raises `ValueError`
+  if no index is loaded for it.
 
 ### Search
 
@@ -551,6 +552,8 @@ OpenAI-compatible path) — see
 
 - **`load_indices(path_indices, document_types, strategies, use_gpu=True) -> dict`**
   Loads the index, metadata, embeddings (`mmap`), and section schema from disk.
+  A strategy whose files are missing (or fail to load) is logged and skipped; a
+  `document_type` for which nothing loads doesn't show up in `idx.indices` at all.
   `use_gpu` here is the **CUDA** path (faiss-gpu; irrelevant on macOS).
   When the installed FAISS has no CUDA support (the case for `faiss-cpu`, the only
   variant installable on macOS), this is detected before trying to move the index
@@ -564,7 +567,8 @@ OpenAI-compatible path) — see
 - **`save_indices(document_type, output_index_dir=config.DEFAULT_OUTPUT_INDEX_DIR)`**
   Persists the loaded strategies of `document_type`, including documents added with
   `add_new_documents`, in the [on-disk layout](#on-disk-file-layout). Raises
-  `ValueError` if a strategy's index, metadata and embedding rows don't line up.
+  `ValueError` if no index is loaded for `document_type`, or if a strategy's index,
+  metadata and embedding rows don't line up.
 
 - **`unload_indices(document_type, strategy=None)`** / **`unload_all_indices()`**
   Frees indices from memory.

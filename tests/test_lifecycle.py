@@ -193,6 +193,25 @@ def test_save_indices_refuses_a_strategy_whose_rows_dont_line_up(make_index, tmp
         idx.save_indices("nao_carregado", str(tmp_path / "out"))
 
 
+def test_load_indices_that_finds_nothing_leaves_the_document_type_unloaded(make_index, fake_chat_provider, tmp_path):
+    # Regression test: load_indices left self.indices[document_type] = {} when the
+    # directory (or every requested strategy's files) was missing, and add_new_documents/
+    # save_indices then returned without error, having done nothing.
+    idx = make_index(embedding_dim=4)
+    idx.load_indices(str(tmp_path / "nao_existe"), ["contrato"], STRATEGIES, use_gpu=False)
+    assert "contrato" not in idx.indices
+    with pytest.raises(ValueError, match="contrato"):
+        idx.add_new_documents("contrato", [("novo.txt", "conteudo")])
+    with pytest.raises(ValueError, match="contrato"):
+        idx.save_indices("contrato", str(tmp_path / "out"))
+
+    loaded = _build_and_load(make_index, fake_chat_provider, tmp_path)
+    idx.load_indices(str(tmp_path / "out"), ["contrato"], ["nao_existe"], use_gpu=False)  # dir exists, strategy doesn't
+    assert "contrato" not in idx.indices
+    loaded.load_indices(str(tmp_path / "out"), ["contrato"], ["nao_existe"], use_gpu=False)
+    assert set(loaded.indices["contrato"]) == set(STRATEGIES)  # what was already loaded stays
+
+
 def test_add_new_documents_unknown_document_type_raises(make_index):
     idx = make_index()
 

@@ -156,7 +156,7 @@ class IndexLifecycleMixin:
             ValueError: If no index is loaded for `document_type`, or a strategy's index,
                 metadata and embedding rows don't line up (nothing is written for it then).
         """
-        if document_type not in self.indices:
+        if not self.indices.get(document_type):
             raise ValueError(f"No index loaded for document type '{document_type}'.")
 
         output_dir = Path(output_index_dir) / document_type
@@ -340,7 +340,8 @@ class IndexLifecycleMixin:
         loaded_data = {}
 
         for document_type in document_types:
-            self.indices.setdefault(document_type, {})
+            # No self.indices entry until a strategy actually loads: an empty one would
+            # make add_new_documents/save_indices treat the document type as loaded.
             loaded_data.setdefault(document_type, {})
 
             document_dir = os.path.join(path_indices, document_type)
@@ -420,7 +421,7 @@ class IndexLifecycleMixin:
             self._warn_if_document_prefix_differs(document_dir, document_type, strategy)
 
             loaded_tuple = (final_index, metadata, embeddings)
-            self.indices[document_type][strategy] = loaded_tuple
+            self.indices.setdefault(document_type, {})[strategy] = loaded_tuple
             loaded_data[document_type][strategy] = loaded_tuple
             # Stale otherwise: a strategy already loaded that gets reloaded here (no
             # unload_indices() in between) would keep evaluate_strategy_hybrid's cached
@@ -520,8 +521,12 @@ class IndexLifecycleMixin:
 
         Returns:
             None
+
+        Raises:
+            ValueError: If no strategy is loaded for `document_type` (e.g. `load_indices`
+                found no index files for it).
         """
-        if document_type not in self.indices:
+        if not self.indices.get(document_type):
             raise ValueError(f"Index for document type '{document_type}' not found. Load the index before adding documents.")
 
         # "full" is pooled from the chunk embeddings: embed new_docs' chunks at most once,
