@@ -32,8 +32,8 @@ class IndexLifecycleMixin:
         Parameters:
             document_types (list[str]): The list of document types to check.
             strategies (list[str]): The list of strategies to check.
-            require_gpu (bool): If True, also checks whether the index is being
-                                 searched with GPU acceleration (CUDA or MPS).
+            require_gpu (bool): If True, also checks whether the index was moved to
+                                 the GPU (CUDA, via faiss-gpu).
 
         Returns:
             bool: True if ALL requested combinations are loaded (and on GPU, if requested),
@@ -67,12 +67,8 @@ class IndexLifecycleMixin:
             logger.debug(_("Data for '%(document_type)s/%(strategy)s' is not loaded (None).") % {"document_type": document_type, "strategy": strategy})
             return False
 
-        # "GPU" covers two independent paths: index moved to GPU via CUDA
-        # (faiss-gpu, nonexistent on macOS) OR search accelerated via MPS (self._should_use_mps).
-        is_gpu_index = (
-            (FAISS_HAS_GPU_SUPPORT and isinstance(index, faiss.GpuIndex))
-            or self._should_use_mps(index)
-        )
+        # Index moved to the GPU via CUDA (faiss-gpu, nonexistent on macOS).
+        is_gpu_index = FAISS_HAS_GPU_SUPPORT and isinstance(index, faiss.GpuIndex)
         if require_gpu and not is_gpu_index:
             logger.debug(_("Index for '%(document_type)s/%(strategy)s' is not on GPU, but was expected to be.") % {"document_type": document_type, "strategy": strategy})
             return False
@@ -246,8 +242,7 @@ class IndexLifecycleMixin:
     def _move_index_to_gpu(self, index_cpu, strategy):
         if not FAISS_HAS_GPU_SUPPORT:
             # Build without CUDA (faiss-cpu, the only variant installable on macOS) —
-            # there's nothing to try here. On Apple Silicon, real acceleration is via MPS
-            # at search time (see `use_mps` on the constructor and `_should_use_mps`), not on load.
+            # there's nothing to try here.
             logger.debug(
                 _("   FAISS installed without CUDA GPU support — keeping '%(strategy)s' on CPU.") % {"strategy": strategy}
             )

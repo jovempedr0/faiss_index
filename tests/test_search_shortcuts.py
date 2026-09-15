@@ -231,7 +231,7 @@ def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
     make_index, fake_chat_provider, tmp_path, monkeypatch
 ):
     # Regression test: with require_gpu=True and no GPU acceleration for the index
-    # (no CUDA, and use_mps=False or an IVF index), the loaded-check always failed, so
+    # (no CUDA), the loaded-check always failed, so
     # every call reloaded the index from disk over the in-memory one — silently
     # discarding documents added via add_new_documents since the index was saved.
     idx = make_index(embedding_dim=4)

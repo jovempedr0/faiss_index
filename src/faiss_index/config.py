@@ -53,7 +53,6 @@ DEFAULT_AUTO_INDEX_THRESHOLDS = (10_000, 80_000)
 DEFAULT_IVF_NPROBE = 8
 DEFAULT_PQ_M = 8
 DEFAULT_PQ_NBITS = 8
-DEFAULT_USE_MPS = True
 
 # --- Path defaults ---------------------------------------------------------------
 DEFAULT_BASE_DATA_DIR = os.environ.get('FAISS_INDEX_BASE_DATA_DIR', './data')

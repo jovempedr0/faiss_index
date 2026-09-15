@@ -26,8 +26,7 @@ def test_package_works_for_txt_files_without_the_ocr_extra(tmp_path):
 
         chat = FakeChatProvider()
         chat.responses.append({{"sections": []}})
-        idx = FaissDocumentIndex(base_path=".", embedding_provider=FakeEmbeddingProvider(),
-                                 chat_provider=chat, use_mps=False)
+        idx = FaissDocumentIndex(base_path=".", embedding_provider=FakeEmbeddingProvider(), chat_provider=chat)
         idx.build_indices("doctype", base_data_dir={str(tmp_path / "data")!r},
                           output_index_dir={str(tmp_path / "out")!r})
         print("chunks:", idx.indices["doctype"]["chunks"][0].ntotal)

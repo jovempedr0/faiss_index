@@ -1,5 +1,6 @@
 import logging
 import os
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import faiss
@@ -7,10 +8,9 @@ from rank_bm25 import BM25Okapi
 
 from . import config
 from . import constants
-# torch is used directly below (MPS availability check); FAISS_HAS_GPU_SUPPORT isn't
-# used in this file anymore (only by _lifecycle.py/_index_backend.py) but is
+# FAISS_HAS_GPU_SUPPORT isn't used in this file anymore (only by _lifecycle.py) but is
 # re-exported here since it used to live in this module.
-from ._gpu_support import FAISS_HAS_GPU_SUPPORT, torch  # noqa: F401
+from ._gpu_support import FAISS_HAS_GPU_SUPPORT  # noqa: F401
 from ._index_backend import FaissIndexBackendMixin
 from ._ingestion import DocumentIngestionMixin
 from ._lifecycle import IndexLifecycleMixin
@@ -43,7 +43,7 @@ class FaissDocumentIndex(
       - `DocumentIngestionMixin` (`_ingestion.py`): reading files and turning them
         into (embeddings, metadata) for the "full"/"sections"/"chunks" strategies.
       - `FaissIndexBackendMixin` (`_index_backend.py`): FAISS index construction
-        (flat/IVFFlat/IVFPQ) and the low-level dense-search path (incl. MPS).
+        (flat/IVFFlat/IVFPQ) and the low-level dense-search path.
       - `IndexLifecycleMixin` (`_lifecycle.py`): build/save/load/unload and
         adding new documents to already-loaded indices.
       - `SearchMixin` (`_search.py`): dense/hybrid search, reranking, strategy
@@ -77,7 +77,7 @@ class FaissDocumentIndex(
                  ivf_nprobe: int = config.DEFAULT_IVF_NPROBE,
                  pq_m: int = config.DEFAULT_PQ_M,
                  pq_nbits: int = config.DEFAULT_PQ_NBITS,
-                 use_mps: bool = config.DEFAULT_USE_MPS,
+                 use_mps: Optional[bool] = None,
                  embedding_query_prefix: str = "",
                  embedding_document_prefix: str = ""):
         """
@@ -136,14 +136,11 @@ class FaissDocumentIndex(
                 (higher = more accurate and slower). Defaults to 8.
             pq_m (int): Number of sub-quantizers for IVFPQ. Must divide embedding_dim.
             pq_nbits (int): Bits per sub-quantizer for IVFPQ. Defaults to 8.
-            use_mps (bool): If True (default) and `torch` with MPS support is available
-                (Apple Silicon GPU), search on "flat" indices runs on MPS via torch instead
-                of FAISS CPU. "ivf_flat"/"ivf_pq" indices keep using FAISS's native search
-                (FAISS has no Metal backend, and redoing the brute-force approximate search
-                on MPS would negate the benefit of having chosen it). Has no effect outside
-                Apple Silicon macOS, or without `torch` installed — falls back to FAISS CPU
-                normally. Independent of `use_gpu` in `load_indices`/`_move_index_to_gpu`,
-                which is the CUDA GPU path (faiss-gpu), nonexistent on macOS.
+            use_mps (Optional[bool]): Deprecated, no effect (emits a DeprecationWarning
+                when passed). It used to route "flat" index searches through torch on
+                Apple Silicon's GPU, which measured 2.5-7x slower than FAISS's own CPU
+                search at every index size tested (1.3k-200k vectors), so that path was
+                removed. The CUDA path (faiss-gpu) is `use_gpu` in `load_indices`.
             embedding_query_prefix (str): Prepended to every search query before it's
                 embedded. Defaults to "" (none).
             embedding_document_prefix (str): Prepended to every indexed text (chunk,
@@ -176,14 +173,12 @@ class FaissDocumentIndex(
         self.pq_m = pq_m
         self.pq_nbits = pq_nbits
 
-        self.mps_device = None
-        if use_mps and torch is not None:
-            try:
-                if torch.backends.mps.is_available():
-                    self.mps_device = torch.device("mps")
-                    logger.info(_("MPS (Apple Silicon GPU) available — search on 'flat' indices will be accelerated via torch."))
-            except Exception as e:
-                logger.warning(_("Failed to check MPS availability: %(error)s. Using FAISS CPU.") % {"error": e})
+        if use_mps is not None:
+            warnings.warn(
+                "use_mps is deprecated and has no effect: searching 'flat' indices via torch/MPS measured "
+                "slower than FAISS's CPU search at every index size tested, so that path was removed.",
+                DeprecationWarning, stacklevel=2,
+            )
 
         faiss.omp_set_num_threads(num_threads or os.cpu_count() or 1)
 

@@ -14,7 +14,7 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
   **sections** (structural sections, with an LLM-calibrated schema), and **chunks**
   (sliding text windows).
 - Automatic FAISS index type selection by corpus size (`flat` → `IVFFlat` →
-  `IVFPQ`), with CPU parallelism and, on Apple Silicon, GPU-accelerated search (MPS).
+  `IVFPQ`), with CPU parallelism.
 
 ## Table of contents
 
@@ -43,22 +43,14 @@ pip install numpy faiss-cpu "openai>=1.40" nltk python-dotenv scikit-learn psuti
 That's enough to import the package and index `.txt` files; reading `.pdf`/`.doc`/`.docx`
 needs the `ocr` extra (see [Required setup](#required-setup)).
 
-Alternatively, from this repository (editable install, with the OCR and MPS extras):
+Alternatively, from this repository (editable install, with the OCR extra):
 
 ```bash
-pip install -e ".[ocr,mps]"
+pip install -e ".[ocr]"
 ```
 
-Optional dependency (accelerates search on `flat` indices via GPU on Apple Silicon —
-see [`use_mps`](#performance-configuration)); if absent, everything still works
-normally on CPU:
-
-```bash
-pip install torch
-```
-
-`faiss-cpu` only exists for CPU. FAISS itself has no Metal/MPS backend — that's why
-`torch`/MPS acceleration is done outside of FAISS (see the performance section).
+`faiss-cpu` only exists for CPU (FAISS has no Metal/MPS backend); on Linux with CUDA,
+`faiss-gpu` enables `load_indices(..., use_gpu=True)`.
 
 ## Required setup
 
@@ -477,7 +469,7 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=True, embedding_query_prefix="", embedding_document_prefix="")`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
@@ -548,16 +540,15 @@ OpenAI-compatible path) — see
 
 - **`load_indices(path_indices, document_types, strategies, use_gpu=True) -> dict`**
   Loads the index, metadata, embeddings (`mmap`), and section schema from disk.
-  `use_gpu` here is the **CUDA** path (irrelevant on macOS — see
-  [`use_mps`](#performance-configuration) for real acceleration on Apple Silicon).
+  `use_gpu` here is the **CUDA** path (faiss-gpu; irrelevant on macOS).
   When the installed FAISS has no CUDA support (the case for `faiss-cpu`, the only
   variant installable on macOS), this is detected before trying to move the index
   — it silently falls back to CPU (without trying `StandardGpuResources()` and
   failing on every index loaded).
 
 - **`is_index_loaded(document_types, strategies, require_gpu) -> bool`**
-  Checks whether all requested combinations are already loaded (and GPU-accelerated
-  — CUDA or MPS —, if `require_gpu=True`).
+  Checks whether all requested combinations are already loaded (and moved to the GPU
+  via CUDA, if `require_gpu=True`).
 
 - **`unload_indices(document_type, strategy=None)`** / **`unload_all_indices()`**
   Frees indices from memory.
@@ -609,7 +600,7 @@ middle of the code:
 | `auto_index_thresholds` | `(flat_limit, ivf_flat_limit)` used when `index_type="auto"`. Defaults to `(10_000, 80_000)`. |
 | `ivf_nlist` / `ivf_nprobe` | Number of clusters / clusters visited per search in `ivf_flat`/`ivf_pq`. |
 | `pq_m` / `pq_nbits` | Compression parameters for `ivf_pq`. |
-| `use_mps` | Accelerates search on `flat` indices via GPU (Apple Silicon), when `torch` with MPS is available. `ivf_*` indices keep using FAISS's native search. |
+| `use_mps` | *Deprecated, no effect.* Used to run `flat` searches on Apple Silicon's GPU via torch; that measured 2.5–7x slower than FAISS's CPU search at every size tested (1.3k–200k vectors), so the path was removed. |
 
 Automatic index type selection (`index_type="auto"`, the default):
 
@@ -742,7 +733,7 @@ the class (each still callable as if it were a plain method — mixin methods ca
 other freely via `self`, regardless of which module they're defined in): the
 LLM-calibrated section schema (`_sections.py`), turning documents into
 embeddings/metadata (`_ingestion.py`), FAISS index construction and the dense-search
-path incl. MPS (`_index_backend.py`), build/save/load/unload lifecycle
+path (`_index_backend.py`), build/save/load/unload lifecycle
 (`_lifecycle.py`), and dense/hybrid search, reranking and the `generate_search*`
 shortcuts (`_search.py`). These `_*.py` modules are an implementation detail of
 `core.py`, not meant to be imported directly.

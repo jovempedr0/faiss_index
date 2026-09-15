@@ -94,7 +94,6 @@ def make_index(fake_embedding_provider, fake_chat_provider, tmp_path):
 
     def _make(embedding_dim: int = 8, **kwargs):
         fake_embedding_provider.dimension = embedding_dim
-        kwargs.setdefault("use_mps", False)
         return FaissDocumentIndex(
             base_path=str(tmp_path),
             embedding_provider=fake_embedding_provider,
