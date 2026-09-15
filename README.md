@@ -493,6 +493,9 @@ OpenAI-compatible path) — see
   Reads all supported documents under `base_data_dir/document_type/`, calibrates
   the section schema if needed, generates embeddings (in batches), and
   builds+saves the `full`, `sections` (if a schema exists), and `chunks` indices.
+  A strategy that ends up with no vectors (e.g. `sections` when no document has a
+  section) isn't registered as loaded, and any files a previous build left for it in
+  the output directory are removed — so `load_indices` can't serve an outdated one.
 
 - **`register_document_type(document_type, sample_texts, force_recalibrate=False)`**
   Manually calibrates (via LLM) the section schema for a type, from sample texts.

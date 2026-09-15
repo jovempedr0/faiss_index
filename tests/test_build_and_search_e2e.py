@@ -163,6 +163,31 @@ def test_embeddings_are_float32_in_memory_and_on_disk(make_index, fake_chat_prov
         assert np.load(out / "doctype" / f"doctype_{strategy}_embeddings.npy").dtype == np.float32
 
 
+def test_rebuild_removes_the_files_of_a_strategy_it_no_longer_produces(
+    make_index, fake_chat_provider, fake_structure_provider, tmp_path
+):
+    # Regression test: rebuilding into the same directory left a strategy's files from
+    # the previous build on disk when this build didn't produce it, and load_indices
+    # then served sections of a document no longer in the corpus.
+    out = _build_txt_corpus(make_index(embedding_dim=8), fake_chat_provider, tmp_path, ["Cabecalho\ncorpo antigo"])
+    (tmp_path / "data" / "doctype" / "doc0.txt").unlink()
+    (tmp_path / "data" / "doctype" / "novo.txt").write_text("documento novo", encoding="utf-8")
+    (out / "doctype" / "doctype_notes.txt").write_text("not the library's", encoding="utf-8")
+
+    rebuilder = make_index(embedding_dim=8, structure_provider=fake_structure_provider)  # finds no sections
+    rebuilder.build_indices(document_type="doctype", base_data_dir=str(tmp_path / "data"), output_index_dir=str(out))
+
+    assert sorted(p.name for p in (out / "doctype").iterdir()) == sorted(
+        [f"doctype_{strategy}{suffix}" for strategy in ("full", "chunks")
+         for suffix in (".index", "_metadata.json", "_embeddings.npy", "_embedding.json")]
+        + ["doctype_section_schema.json", "doctype_notes.txt"]
+    )
+    loaded = make_index(embedding_dim=8)
+    loaded.load_indices(str(out), ["doctype"], ["full", "sections", "chunks"], use_gpu=False)
+    assert set(loaded.indices["doctype"]) == {"full", "chunks"}
+    assert [Path(m["file"]).name for m in loaded.indices["doctype"]["full"][1]] == ["novo.txt"]
+
+
 def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
     # Regression test: build_indices filtered files with a case-sensitive
     # `p.suffix in SUPPORTED_FILE_EXTENSIONS`, so "DOC2.TXT" (or a scanned "X.PDF")

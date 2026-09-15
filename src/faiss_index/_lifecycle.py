@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 class IndexLifecycleMixin:
 
+    # The strategies build_indices produces (each one only when it has vectors).
+    _BUILT_STRATEGIES = ("full", "sections", "chunks")
+
     def is_index_loaded(self, document_types: list[str], strategies: list[str], require_gpu: bool) -> bool:
         """
         Checks whether the indices for all combinations of document types and
@@ -203,6 +206,8 @@ class IndexLifecycleMixin:
     ):
         """
         Builds and saves FAISS indices for the different document indexing strategies.
+        A strategy this build doesn't produce (e.g. "sections" with no section schema)
+        has any files a previous build left for it in the output directory removed.
 
         Parameters:
             document_type (str): Document type to build the indices for.
@@ -279,7 +284,29 @@ class IndexLifecycleMixin:
                 continue
             self.indices[document_type][strategy] = (index, metadata, stored_embeddings)
 
+        # A strategy this build didn't produce (no section schema, no section found...)
+        # must not keep a previous build's files in this directory: load_indices would
+        # serve them, describing documents that may no longer be in the corpus.
+        for strategy in self._BUILT_STRATEGIES:
+            if strategy not in self.indices[document_type]:
+                self._remove_strategy_files(document_type, strategy, output_dir)
+
         logger.info(_("Index construction for '%(document_type)s' complete.") % {"document_type": document_type})
+
+    def _remove_strategy_files(self, document_type: str, strategy: str, output_dir: Path) -> None:
+        """Deletes the files `_write_strategy_files` writes for one strategy, if present."""
+        suffixes = (".index", "_metadata.json", "_embeddings.npy", "_embeddings.tmp.npy", "_embedding.json")
+        removed = False
+        for suffix in suffixes:
+            path = output_dir / f"{document_type}_{strategy}{suffix}"
+            if path.exists():
+                path.unlink()
+                removed = True
+        if removed:
+            logger.warning(
+                _("Removed the '%(strategy)s' index files of '%(document_type)s' left in '%(output_dir)s' by a previous build: this build produced no '%(strategy)s' index.")
+                % {"strategy": strategy, "document_type": document_type, "output_dir": output_dir}
+            )
 
     def _log_memory_usage(self, stage: str):
         """Helper function to log current memory usage."""
