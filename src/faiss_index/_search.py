@@ -5,6 +5,7 @@ Rank Fusion) search, reranking, strategy comparison/scoring, and the high-level
 `core.py`; not meant to be imported directly by users.
 """
 import logging
+import threading
 import time
 import warnings
 from collections import defaultdict
@@ -475,25 +476,7 @@ class SearchMixin:
             List[str]: The texts of the search results, best first — a chunk, a section,
                 or a whole document, depending on `strategy`.
         """
-        if self._is_single_index_loaded(document_type, strategy, require_gpu=False):
-            logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
-
-            if require_gpu and not self._is_single_index_loaded(document_type, strategy, require_gpu=True):
-                # Already in memory, just not GPU-accelerated: move that same index
-                # instead of reloading it from disk, which would silently discard
-                # anything added via add_new_documents since it was saved (and re-read
-                # the files on every call). Without CUDA this keeps the index on CPU.
-                index, metadata, embeddings = self.indices[document_type][strategy]
-                self.indices[document_type][strategy] = (self._move_index_to_gpu(index, strategy), metadata, embeddings)
-        else:
-            logger.info(_("Index for '%(document_type)s/%(strategy)s' not found. Loading now...") % {"document_type": document_type, "strategy": strategy})
-
-            self.load_indices(path_indices=config.DEFAULT_PATH_INDICES,
-                            document_types=[document_type],
-                            strategies=[strategy])
-
-            is_now_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
-            logger.info(_("Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search...") % {"document_type": document_type, "strategy": strategy, "is_now_loaded": is_now_loaded})
+        self._ensure_index_loaded(document_type, strategy, require_gpu)
 
         # clean_text always returns a 1-element list ([text.strip()]), even when the
         # text becomes empty after cleaning — so the emptiness has to be checked on
@@ -507,6 +490,49 @@ class SearchMixin:
         # Only the BM25 side normalizes it, inside _tokenize_for_bm25.
         result_items = self._retrieve(received_query.strip(), document_type, strategy, k, use_hybrid, rerank)
         return [self._extract_metadata_text(res['metadata']) for res in result_items]
+
+    def _ensure_index_loaded(self, document_type: str, strategy: str, require_gpu: bool) -> None:
+        """
+        Makes sure `document_type`/`strategy` is in memory for `generate_search_by_type`,
+        loading it from `config.DEFAULT_PATH_INDICES` if it isn't (and moving it to the
+        GPU, when `require_gpu` and CUDA is available).
+
+        The check-then-load runs under a lock per document_type/strategy: concurrent first
+        requests (e.g. a server that just started) would otherwise each find the index
+        missing and load it from disk — that many times the I/O and peak memory. The
+        first one loads it; the others wait for it and then find it loaded. Once an index
+        is ready, the lock-free check up front skips all of this, so searches on it don't
+        wait on each other, nor on another index being loaded.
+        """
+        if self._is_single_index_loaded(document_type, strategy, require_gpu=require_gpu):
+            logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
+            return
+
+        with self._keyed_lock("load", document_type, strategy):
+            if self._is_single_index_loaded(document_type, strategy, require_gpu=False):
+                logger.info(_("Index for '%(document_type)s/%(strategy)s' found. Running search") % {"document_type": document_type, "strategy": strategy})
+
+                if require_gpu and not self._is_single_index_loaded(document_type, strategy, require_gpu=True):
+                    # Already in memory, just not GPU-accelerated: move that same index
+                    # instead of reloading it from disk, which would silently discard
+                    # anything added via add_new_documents since it was saved (and re-read
+                    # the files on every call). Without CUDA this keeps the index on CPU.
+                    index, metadata, embeddings = self.indices[document_type][strategy]
+                    self.indices[document_type][strategy] = (self._move_index_to_gpu(index, strategy), metadata, embeddings)
+            else:
+                logger.info(_("Index for '%(document_type)s/%(strategy)s' not found. Loading now...") % {"document_type": document_type, "strategy": strategy})
+
+                self.load_indices(path_indices=config.DEFAULT_PATH_INDICES,
+                                document_types=[document_type],
+                                strategies=[strategy])
+
+                is_now_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
+                logger.info(_("Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search...") % {"document_type": document_type, "strategy": strategy, "is_now_loaded": is_now_loaded})
+
+    def _keyed_lock(self, *key: str) -> threading.Lock:
+        """The lock for `key` (e.g. "load", document_type, strategy), created on first use."""
+        with self._keyed_locks_guard:
+            return self._keyed_locks.setdefault(key, threading.Lock())
 
     def _retrieve(self, query: str, document_type: str, strategy: str, k: int, use_hybrid: bool, rerank: bool) -> List[Dict]:
         """

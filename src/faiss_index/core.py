@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import warnings
 from typing import Dict, List, Optional, Tuple
 
@@ -167,6 +168,11 @@ class FaissDocumentIndex(
         # Embedding rows appended by add_new_documents since each strategy was built/loaded,
         # per document_type/strategy — written out (and cleared) by save_indices.
         self._unsaved_embeddings: Dict[str, Dict[str, List[np.ndarray]]] = {}
+        # One lock per key (e.g. ("load", document_type, strategy)), created on first use
+        # by _keyed_lock — lets concurrent requests do a one-time setup once, instead of
+        # once each, without serializing requests that don't need that setup.
+        self._keyed_locks: Dict[Tuple[str, ...], threading.Lock] = {}
+        self._keyed_locks_guard = threading.Lock()
         self.embedding_batch_size = embedding_batch_size
         self.embedding_query_prefix = embedding_query_prefix
         self.embedding_document_prefix = embedding_document_prefix
