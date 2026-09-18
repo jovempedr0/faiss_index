@@ -27,6 +27,7 @@ theme:
 
 nav:
   - Home: index.md
+  - Where this fits: use-cases.md
   - Installation and setup: installation.md
   - Core concepts: concepts.md
   - Quickstart: quickstart.md

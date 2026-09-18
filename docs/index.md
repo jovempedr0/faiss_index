@@ -20,6 +20,7 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
 
 | If you want to… | Read |
 |---|---|
+| see what this is good for, and what it isn't | [Where this fits](use-cases.md) |
 | install it and get the key/NLTK data in place | [Installation and setup](installation.md) |
 | understand what `full`/`sections`/`chunks` are, and how sections are found | [Core concepts](concepts.md) |
 | build and search an index in a few lines | [Quickstart](quickstart.md) |
