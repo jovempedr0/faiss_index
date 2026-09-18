@@ -114,6 +114,15 @@ texts and not worth it on `chunks`. Writing the labeled queries by hand is the m
 having an LLM write one question per sampled chunk (keeping the chunk as
 `relevant_text`) is a quick way to get started.
 
+One trap with generated queries: questions written from a corpus's own text inherit
+that text's spellings and its mistakes, so they favour the pipeline that produced it.
+That makes them fine for comparing *retrieval* choices on one corpus (dense vs. hybrid,
+prefixes, `k`) and misleading for comparing two *extraction* pipelines — two OCR
+engines, two chunkers — against each other. Compare those by generating a set from each
+pipeline's own output and running every set against every index: a pipeline that only
+wins on its own questions hasn't won. Question sets also differ in difficulty, so read
+down a column (same questions, different index) and never across a row.
+
 `compare_strategies` runs several queries × strategies and returns the raw results.
 The older way to score them, `calculate_heuristic_score` (and `generate_search`,
 which calls it), is **deprecated**: it combines speed, distance, variance, file

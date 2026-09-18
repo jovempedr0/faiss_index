@@ -3,7 +3,11 @@ Writes a labeled query set for `evaluate_retrieval`, from the chunks of an index
 was already built — one question per sampled chunk, written by the local chat model,
 labeled with the file it came from and a passage out of the chunk's middle.
 
-    python fixtures/eval/generate_labeled_queries.py [n_per_file] [output.json]
+    python fixtures/eval/generate_labeled_queries.py [n_per_file] [output.json] [chunks_metadata.json]
+
+The chunks argument is what makes an OCR A/B honest: questions written from one
+extraction's text favour that extraction, so each index needs a set written from its
+own chunks, and both sets get run against both indices (see measure_ocr_ab.py).
 
 Kept out of git (see .gitignore): the questions quote real case documents.
 """
@@ -19,7 +23,7 @@ load_dotenv(str(Path(__file__).resolve().parents[2] / ".env"))
 
 from faiss_index.providers import OpenAICompatibleChatProvider  # noqa: E402
 
-CHUNKS = "fixtures/faiss_index_output/casos/casos_chunks_metadata.json"
+DEFAULT_CHUNKS = "fixtures/faiss_index_output/casos/casos_chunks_metadata.json"
 MODEL = "Qwen3-14B-4bit"
 MIN_CHUNK_CHARS = 600
 PASSAGE_WORDS = 30
@@ -57,8 +61,8 @@ def looks_copied(question: str, chunk: str, run_length: int = 12) -> bool:
     )
 
 
-def main(n_per_file: int, output: str) -> None:
-    chunks = json.load(open(CHUNKS, encoding="utf-8"))
+def main(n_per_file: int, output: str, chunks_path: str = DEFAULT_CHUNKS) -> None:
+    chunks = json.load(open(chunks_path, encoding="utf-8"))
     usable = [c for c in chunks if len(c["chunk_text"]) >= MIN_CHUNK_CHARS]
     by_file: dict[str, list] = {}
     for chunk in usable:
@@ -67,6 +71,7 @@ def main(n_per_file: int, output: str) -> None:
     rng = random.Random(0)  # sampled deterministically, so the set can be rebuilt
     sampled = [c for file_chunks in by_file.values()
                for c in rng.sample(file_chunks, min(n_per_file, len(file_chunks)))]
+    print(f"  {chunks_path}")
     print(f"  {len(by_file)} arquivos, {len(usable)} chunks utilizáveis -> {len(sampled)} amostrados")
 
     provider = OpenAICompatibleChatProvider(model=MODEL)
@@ -102,4 +107,5 @@ def main(n_per_file: int, output: str) -> None:
 
 if __name__ == "__main__":
     main(int(sys.argv[1]) if len(sys.argv) > 1 else 3,
-         sys.argv[2] if len(sys.argv) > 2 else "fixtures/eval/labeled_queries_casos.json")
+         sys.argv[2] if len(sys.argv) > 2 else "fixtures/eval/labeled_queries_casos.json",
+         sys.argv[3] if len(sys.argv) > 3 else DEFAULT_CHUNKS)
