@@ -1,6 +1,6 @@
 # API reference
 
-## `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, text_extractor=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
+## `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, text_extractor=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(100_000, 250_000), ivf_nlist=None, ivf_nprobe=32, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](configuration.md#performance-configuration).

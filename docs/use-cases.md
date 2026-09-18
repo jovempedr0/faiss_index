@@ -109,14 +109,15 @@ Exact search (`flat`) over 1024-dimensional vectors, measured on an Apple M-seri
 | Vectors | Search |
 |---|---|
 | 10,000 | 0.55 ms |
-| 100,000 | 3.74 ms |
-| 200,000 | 7.31 ms |
+| 100,000 | 3.80 ms |
+| 250,000 | 9.61 ms |
+| 500,000 | 18.95 ms |
 
 In a real request that number is rarely what you wait for: embedding the query is a call
-to your embedding backend, and it dominates. Above the
+to your embedding backend, and it dominates. Exact search is the default up to 100,000 vectors for that reason. Above the
 [thresholds](configuration.md#performance-configuration) the index type switches to
-`IVFFlat` and then to `IVFSQ8` — approximate, but measured at 99.2% of the exact top-10
-while storing a quarter of the bytes.
+`IVFFlat` and then, past 250,000, to `IVFSQ8` — approximate, but measured at 99% of the
+exact top-10 while storing a quarter of the bytes.
 
 For memory, count roughly 4 KB per vector for `flat`/`IVFFlat` at 1024 dimensions
 (1 KB with `IVFSQ8`), plus the metadata, which holds the text itself.
