@@ -30,7 +30,8 @@ A `sections` vector is pooled the same way, from the section's own ~500-word win
 (embedded with the document prefix): sections easily run past
 `MAX_EMBEDDING_INPUT_CHARS` (35 of 113 on a real 23-document legal corpus, up to ~420k
 characters), and a single embedding call only represented their beginning. On that
-corpus this took `sections` from 65% to 81% file recall@5 with dense search (hybrid:
+corpus, as extracted at the time, this took `sections` from 65% to 81% file recall@5
+with dense search (hybrid:
 86% → 89%, passage recall 70% → 74%). It costs one embedding call per window instead
 of one per section; `sections` indices built before this still load and search as
 before — rebuild them to get the pooled vectors.
@@ -45,6 +46,14 @@ text patterns that mark its start), which is done automatically by `build_indice
 (`self.section_schemas[document_type]`) and persisted to disk
 (`{document_type}_section_schema.json`), so it only needs to be calibrated once per
 type.
+
+The call asks for it deterministically (`temperature=0` on the built-in
+`OpenAICompatibleChatProvider`) and for at most `constants.MAX_SECTIONS_PER_SCHEMA`
+sections, named in snake_case. Both matter more than they look: the schema is written to
+disk and then decides how every document of that type is cut, so a sampled answer meant
+the same corpus segmented differently on different days — and every extra section is one
+more vector per document, splitting a document's content thinner rather than describing
+it better.
 
 If the LLM can't identify any section (a document with no recognizable structure),
 the `sections` strategy is simply skipped for that type — `full` and `chunks` keep

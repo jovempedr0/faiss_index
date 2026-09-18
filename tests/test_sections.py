@@ -198,3 +198,20 @@ def test_build_indices_still_removes_sections_when_the_llm_finds_none(make_index
     rebuilder.build_indices(document_type="casos", base_data_dir=str(tmp_path / "data"), output_index_dir=str(out))
 
     assert not list((out / "casos").glob("casos_sections*"))
+
+
+def test_calibration_prompt_constrains_the_schema_it_asks_for(make_index, fake_chat_provider):
+    # The schema decides how every document of the type is cut, so the prompt has to pin
+    # down what comes back: names that are names (a model asked loosely answered with
+    # "header_/_identifying_information"), and few enough sections that a document's
+    # content isn't spread across a dozen thin vectors.
+    from faiss_index import constants
+
+    idx = make_index()
+    fake_chat_provider.responses.append({"sections": [{"name": "header", "patterns": ["processo:"]}]})
+
+    idx.register_document_type("casos", sample_texts=["amostra de documento"])
+
+    prompt = fake_chat_provider.prompts[0]
+    assert f"at most {constants.MAX_SECTIONS_PER_SCHEMA} sections" in prompt
+    assert "snake_case" in prompt

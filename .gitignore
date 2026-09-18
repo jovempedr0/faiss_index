@@ -22,3 +22,8 @@ fixtures/faiss_index_output/
 
 # mkdocs build output (the site is published by .github/workflows/docs.yml)
 site/
+
+# Local-only evaluation data and the pre-GLM baseline index (real case documents).
+# The scripts in fixtures/eval/ are versioned; what they read and write is not.
+fixtures/eval/*.json
+fixtures/faiss_index_output_tesseract/

@@ -34,8 +34,10 @@ class FakeChatProvider:
 
     def __init__(self):
         self.responses = []
+        self.prompts = []  # every prompt received, for tests that check what was asked
 
     def complete_structured(self, prompt, json_schema):
+        self.prompts.append(prompt)
         if not self.responses:
             raise RuntimeError("No queued response for FakeChatProvider")
         return self.responses.pop(0)
