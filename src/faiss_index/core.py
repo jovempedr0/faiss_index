@@ -115,7 +115,7 @@ class FaissDocumentIndex(
                 `openai_key`. Pass your own object (any type with a
                 `.complete_structured(prompt, json_schema) -> dict` method) otherwise.
             rerank_provider (Optional[RerankProvider]): Backend for `rerank_results`
-                (see [Plugging in a custom provider](#plugging-in-a-custom-provider)).
+                (see docs/providers.md).
                 Unlike `embedding_provider`/`chat_provider`, there's no default here —
                 reranking is a genuinely new capability, not something already built
                 into the OpenAI-compatible path. `providers.CrossEncoderRerankProvider`

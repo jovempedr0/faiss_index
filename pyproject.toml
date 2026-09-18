@@ -24,6 +24,7 @@ dependencies = [
 ocr = ["pdfplumber", "pytesseract", "pdf2image", "Pillow"]
 rerank = ["sentence-transformers"]
 dev = ["pytest"]
+docs = ["mkdocs-material>=9,<10", "mkdocs<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

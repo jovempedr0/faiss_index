@@ -19,3 +19,6 @@ fixtures/faiss_index_output/
 
 # Claude
 .claude/
+
+# mkdocs build output (the site is published by .github/workflows/docs.yml)
+site/
