@@ -63,8 +63,10 @@ pip install -e ".[ocr]"
 
 2. **OpenAI key** (only for the default provider — see
    [Plugging in a custom provider](#plugging-in-a-custom-provider) to use a different
-   backend instead): via the `OPENAI_API_KEY` environment variable (or `.env`), or
-   passed directly to the constructor (`openai_key=...`).
+   backend instead): via the `OPENAI_API_KEY` environment variable, or passed directly
+   to the constructor (`openai_key=...`). A `.env` is only read when the application
+   loads it, or when `FAISS_INDEX_DOTENV_PATH` names it — see
+   [Before using it: configuration](#before-using-it-configuration).
 
 3. **Reading PDF/DOC/DOCX**: depends on `extract_text_from_file_ocr_fallback`
    (`utils_ocr.py`), which in turn needs `pdfplumber`, `pytesseract`, `pdf2image`,
@@ -208,7 +210,10 @@ Before any of the uses below:
 
 1. Install the dependencies ([Installation](#installation)) and run
    `nltk.download("stopwords")` ([Required setup](#required-setup)).
-2. Make sure `OPENAI_API_KEY` is set (`.env` or `openai_key=...` on the constructor).
+2. Make sure `OPENAI_API_KEY` is set — in the environment, or `openai_key=...` on the
+   constructor. Importing this package does **not** load a `.env` on its own: call
+   `load_dotenv()` in your application before importing it, or point
+   `FAISS_INDEX_DOTENV_PATH` at the file (see below).
 3. If your project's directory structure isn't the default (`./data`,
    `../faiss_index`, etc.), or you need a non-default `.env`/NLTK data location,
    adjust the environment variables described in
@@ -764,9 +769,11 @@ shortcuts (`_search.py`). These `_*.py` modules are an implementation detail of
   to an environment variable. Nothing here assumes any specific project's
   directory structure:
 
-  - **`FAISS_INDEX_DOTENV_PATH`**: path to a specific `.env`. If not set,
-    `load_dotenv()` looks for a `.env` starting from the current directory and
-    walking up the tree.
+  - **`FAISS_INDEX_DOTENV_PATH`**: path to a `.env` for this library to load. If it
+    isn't set, no `.env` is loaded at all: importing a library shouldn't put variables
+    into the process from a file the application never named — and what a `.env` holds
+    reaches every other library in that process too. An application that wants one
+    calls `load_dotenv()` itself, before importing this package.
   - **`NLTK_DATA_PATH`**: extra NLTK data directory. If not set, only NLTK's own
     default paths are used (e.g.: `~/nltk_data`, populated by
     `nltk.download("stopwords")` — see [Required setup](#required-setup)).
