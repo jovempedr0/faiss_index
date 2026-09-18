@@ -215,7 +215,11 @@ class FaissDocumentIndex(
             # Only the OpenAI-compatible default path needs a key — a fully custom
             # embedding_provider + chat_provider pair doesn't touch OPENAI_API_KEY at all.
             if not openai_key:
-                raise ValueError("OPENAI_API_KEY not found. Set it in .env or pass it as a parameter")
+                raise ValueError(
+                    "OPENAI_API_KEY not found. Set it in the environment, or pass it as openai_key. "
+                    "A .env is only read when your application loads it (before importing this package) "
+                    "or when FAISS_INDEX_DOTENV_PATH names it."
+                )
 
         self.embedding_provider = embedding_provider or OpenAICompatibleEmbeddingProvider(
             model=embedding_model, api_key=openai_key, dimension=embedding_dim
