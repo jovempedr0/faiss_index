@@ -94,11 +94,10 @@ def make_index(fake_embedding_provider, fake_chat_provider, tmp_path):
 
     def _make(embedding_dim: int = 8, **kwargs):
         fake_embedding_provider.dimension = embedding_dim
-        return FaissDocumentIndex(
-            base_path=str(tmp_path),
-            embedding_provider=fake_embedding_provider,
-            chat_provider=fake_chat_provider,
-            **kwargs,
-        )
+        # Defaults, not fixed arguments: a test that needs a provider of its own (one
+        # that fails, counts calls...) passes it in.
+        kwargs.setdefault("embedding_provider", fake_embedding_provider)
+        kwargs.setdefault("chat_provider", fake_chat_provider)
+        return FaissDocumentIndex(base_path=str(tmp_path), **kwargs)
 
     return _make

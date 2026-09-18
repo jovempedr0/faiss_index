@@ -17,6 +17,7 @@ import psutil
 
 from . import config
 from ._gpu_support import FAISS_HAS_GPU_SUPPORT
+from ._sections import SectionSchemaError
 from .i18n import _
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,10 @@ class IndexLifecycleMixin:
 
         logger.info(_("Processing %(count)s documents of %(document_type)s...") % {"count": len(docs), "document_type": document_type})
 
+        # Strategies this build couldn't attempt, whose existing files it must therefore
+        # leave alone rather than treat as superseded.
+        keep_strategies: set[str] = set()
+
         # "full" is pooled from the chunk embeddings — embedded once, used by both.
         chunks = self.create_embeddings_chunks(docs)
         embeddings_map = {
@@ -261,10 +266,25 @@ class IndexLifecycleMixin:
                 self._load_section_schema(document_type, output_dir)
             if document_type not in self.section_schemas:
                 sample_texts = [content for _, content in docs[: self.MAX_SECTION_SAMPLE_DOCS]]
-                self.register_document_type(document_type, sample_texts)
+                try:
+                    self.register_document_type(document_type, sample_texts)
+                except SectionSchemaError as e:
+                    # A call that failed says nothing about whether these documents have
+                    # sections, so this build has no opinion on the strategy at all: it
+                    # leaves whatever was built before in place (see `keep_strategies`
+                    # below) instead of reading the failure as "no sections here".
+                    logger.error("%s", e, exc_info=True)
+                    keep_strategies.add("sections")
             self._save_section_schema(document_type, output_dir)
 
-            if self.section_schemas.get(document_type):
+            if "sections" in keep_strategies:
+                logger.warning(
+                    _("The 'sections' strategy was not rebuilt for '%(document_type)s' and its previous "
+                      "files were kept, so they still describe the corpus of the last successful build. "
+                      "Run build_indices again once the section schema can be calibrated.")
+                    % {"document_type": document_type}
+                )
+            elif self.section_schemas.get(document_type):
                 embeddings_map["sections"] = self.create_embeddings_sections(docs, document_type)
             else:
                 logger.warning(_("No section schema for '%(document_type)s'. The 'sections' strategy will not be built.") % {"document_type": document_type})
@@ -286,9 +306,12 @@ class IndexLifecycleMixin:
 
         # A strategy this build didn't produce (no section schema, no section found...)
         # must not keep a previous build's files in this directory: load_indices would
-        # serve them, describing documents that may no longer be in the corpus.
+        # serve them, describing documents that may no longer be in the corpus. The
+        # exception is a strategy this build couldn't even try (`keep_strategies`):
+        # deleting a good index because a calibration call timed out loses far more than
+        # the staleness costs, and it's warned about above.
         for strategy in self._BUILT_STRATEGIES:
-            if strategy not in self.indices[document_type]:
+            if strategy not in self.indices[document_type] and strategy not in keep_strategies:
                 self._remove_strategy_files(document_type, strategy, output_dir)
 
         logger.info(_("Index construction for '%(document_type)s' complete.") % {"document_type": document_type})

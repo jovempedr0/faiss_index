@@ -131,6 +131,16 @@ If the LLM can't identify any section (a document with no recognizable structure
 the `sections` strategy is simply skipped for that type — `full` and `chunks` keep
 working normally.
 
+A calibration **call that fails** (timeout, connection error, a response that isn't the
+JSON asked for) is a different thing entirely, and is treated as one: it raises
+`SectionSchemaError`, nothing is cached, and `build_indices` logs the error, builds
+`full`/`chunks` as usual and leaves the `sections` files of the previous build exactly
+where they are — they then describe the corpus of the last successful build, which is
+warned about, and the next build rebuilds them. Reading a failed call as "no sections
+here" would cache that answer for the life of the instance (also stopping the schema on
+disk from ever being loaded again) and delete a sections index that costs one embedding
+call per section to rebuild.
+
 #### Alternative: structure-aware extraction via Docling
 
 Pattern matching (above) works on already-flattened text, so it can't see real
@@ -541,7 +551,8 @@ see [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 - **`register_document_type(document_type, sample_texts, force_recalibrate=False)`**
   Manually calibrates (via LLM) the section schema for a type, from sample texts.
   Useful for recalibrating (`force_recalibrate=True`) or calibrating before
-  indexing.
+  indexing. Raises `SectionSchemaError` if the call itself failed, caching nothing so
+  a later call tries again.
 
 - **`add_new_documents(document_type, new_docs)`**
   Adds new documents (`List[Tuple[path, text]]`) to already-loaded indices, for
