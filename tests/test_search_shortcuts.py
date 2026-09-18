@@ -1,5 +1,10 @@
+import threading
+
 import numpy as np
 import faiss
+import pytest
+
+from faiss_index import IndexLoadError, _search as search_module, config
 
 
 def _build_chunks_index(idx, texts):
@@ -19,7 +24,8 @@ def test_calculate_heuristic_score_handles_dense_results(make_index):
     _build_chunks_index(idx, ["primeiro texto", "segundo texto", "terceiro texto"])
     dense_results = idx.evaluate_strategy("um texto qualquer", "doctype", "chunks", k=3)
 
-    scores = idx.calculate_heuristic_score({"query": {"chunks": dense_results}})
+    with pytest.deprecated_call():
+        scores = idx.calculate_heuristic_score({"query": {"chunks": dense_results}})
 
     assert "chunks" in scores
     assert scores["chunks"]["mean_score"] >= 0
@@ -32,10 +38,67 @@ def test_calculate_heuristic_score_handles_hybrid_results_without_keyerror(make_
 
     # Before the fix, this raised KeyError: 'avg_distance' (evaluate_strategy_hybrid's
     # results don't have it — only per-item "rrf_score").
-    scores = idx.calculate_heuristic_score({"query": {"chunks": hybrid_results}})
+    with pytest.deprecated_call():
+        scores = idx.calculate_heuristic_score({"query": {"chunks": hybrid_results}})
 
     assert "chunks" in scores
     assert scores["chunks"]["mean_score"] >= 0
+
+
+def test_evaluate_retrieval_reports_recall_mrr_passage_recall_and_result_size(make_index, monkeypatch):
+    idx = make_index(embedding_dim=2)
+    metadata = [
+        {"file": "a.txt", "type": "chunk", "chunk_text": "clausula de rescisao sem multa"},
+        {"file": "b.txt", "type": "chunk", "chunk_text": "pagamento  em\nduas parcelas"},
+        {"file": "c.txt", "type": "chunk", "chunk_text": "foro da comarca"},
+    ]
+    embeddings = np.array([[0.0, 1.0], [2.0, 0.0], [5.0, 5.0]], dtype="float32")
+    index = faiss.IndexFlatL2(2)
+    index.add(embeddings)
+    idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
+    query_vectors = {"rescisao": [0.0, 1.0], "parcelas": [0.1, 1.0], "inexistente": [5.0, 5.0]}
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": np.array([query_vectors[texts[0]]], dtype="float32"))
+
+    report = idx.evaluate_retrieval(
+        [
+            {"query": "rescisao", "relevant_files": ["a.txt"], "relevant_text": "rescisao sem multa"},  # rank 1
+            {"query": "parcelas", "relevant_files": ["b.txt"], "relevant_text": "em duas parcelas"},    # rank 2
+            {"query": "inexistente", "relevant_files": ["zzz.txt"]},                                   # miss
+        ],
+        document_type="doctype", strategies=["chunks"], k=2,
+    )
+
+    chunks = report["chunks"]
+    assert chunks["recall_at_k"] == pytest.approx(2 / 3)
+    assert chunks["mrr"] == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+    assert chunks["passage_recall_at_k"] == 1.0  # b.txt's passage matched with whitespace normalized
+    assert chunks["n_queries"] == 3
+    a, b, c = (len(m["chunk_text"]) for m in metadata)
+    assert chunks["avg_result_chars"] == pytest.approx(np.mean([a, b, a, b, c, b]))  # top-2: (a,b) (a,b) (c,b)
+
+
+def test_evaluate_retrieval_raises_for_a_strategy_that_is_not_loaded(make_index):
+    # Regression test: a strategy that isn't loaded (e.g. the typo "chunk") searched
+    # nothing and came back as recall/mrr 0.0 — indistinguishable from a bad strategy.
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["primeiro texto", "segundo texto"])
+    labeled = [{"query": "texto", "relevant_files": ["doc_0.txt"]}]
+
+    with pytest.raises(ValueError, match=r"\['chunk'\].*loaded: \['chunks'\]"):
+        idx.evaluate_retrieval(labeled, document_type="doctype", strategies=["chunks", "chunk"])
+    with pytest.raises(ValueError, match="'outro_tipo'"):
+        idx.evaluate_retrieval(labeled, document_type="outro_tipo", strategies=["chunks"])
+
+
+def test_calculate_heuristic_score_and_generate_search_are_deprecated(make_index):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["primeiro texto", "segundo texto"])
+    comparison = idx.compare_strategies(["texto"], "doctype", ["chunks"], k=2)
+
+    with pytest.deprecated_call():
+        idx.calculate_heuristic_score(comparison)
+    with pytest.deprecated_call():
+        idx.generate_search(["texto"], keywords=[], document_type="doctype", strategies_compare=["chunks"])
 
 
 def test_compare_strategies_dense_by_default(make_index):
@@ -78,7 +141,7 @@ def test_generate_search_by_type_use_hybrid_recovers_exact_term(make_index, monk
     index = faiss.IndexFlatL2(2)
     index.add(embeddings)
     idx.indices["doctype"] = {"chunks": (index, metadata, embeddings)}
-    monkeypatch.setattr(idx, "get_embeddings", lambda texts: np.array([[1.0, 0.0]], dtype="float32"))
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": np.array([[1.0, 0.0]], dtype="float32"))
 
     dense_only = idx.generate_search_by_type(
         "0829366-83.2025.8.14.0301", "doctype", "chunks", require_gpu=False, k=2, use_hybrid=False
@@ -107,6 +170,41 @@ def test_generate_search_by_type_rerank_narrows_to_k(make_index, fake_rerank_pro
     assert chunks == ["texto muito relevante", "texto medio"]
 
 
+def test_generate_search_by_type_sends_the_unaltered_query_to_embeddings_and_reranker(
+    make_index, fake_rerank_provider, monkeypatch
+):
+    # Regression test: the shortcut clean_text'ed the query before searching, so the
+    # embedding model and the cross-encoder got "clausula permite rescisao" for
+    # "Cláusula que NÃO permite rescisão?" — punctuation, case and stopwords like
+    # "não"/"sem" (which invert meaning) stripped, while documents are embedded as-is.
+    idx = make_index(embedding_dim=4, rerank_provider=fake_rerank_provider)
+    _build_chunks_index(idx, ["texto um", "texto dois", "texto tres"])
+    embedded_texts = []
+    real_get_embeddings = idx.get_embeddings
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": embedded_texts.extend(texts) or real_get_embeddings(texts, prefix))
+    query = "Cláusula que NÃO permite rescisão?"
+
+    idx.generate_search_by_type(query, "doctype", "chunks", require_gpu=False, k=2, use_hybrid=True, rerank=True)
+
+    assert embedded_texts == [query]
+    assert fake_rerank_provider.calls[0][0] == query
+
+
+def test_generate_search_sends_the_unaltered_query_to_embeddings(make_index, monkeypatch):
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois"])
+    embedded_texts = []
+    real_get_embeddings = idx.get_embeddings
+    monkeypatch.setattr(idx, "get_embeddings", lambda texts, prefix="": embedded_texts.extend(texts) or real_get_embeddings(texts, prefix))
+    query = "Decisão sem efeito suspensivo?"
+
+    with pytest.deprecated_call():
+        results, _scores = idx.generate_search([query], keywords=[], document_type="doctype", strategies_compare=["chunks"])
+
+    assert embedded_texts == [query]
+    assert list(results) == [query]
+
+
 def test_generate_search_by_type_empty_query_returns_empty_list(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, ["texto um", "texto dois"])
@@ -121,6 +219,186 @@ def test_generate_search_by_type_empty_query_returns_empty_list(make_index):
     assert chunks == []
 
 
+def _build_on_disk(idx, fake_chat_provider, tmp_path, texts):
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "out"
+    (data_dir / "doctype").mkdir(parents=True)
+    for i, text in enumerate(texts):
+        (data_dir / "doctype" / f"doc_{i}.txt").write_text(text, encoding="utf-8")
+    fake_chat_provider.responses.append({"sections": []})  # no structure -> skip "sections"
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(output_dir))
+    return output_dir
+
+
+def test_generate_search_by_type_loads_index_from_default_path_when_not_in_memory(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)  # fresh instance, nothing in memory
+
+    chunks = idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=2)
+
+    assert sorted(chunks) == ["texto dois", "texto um"]
+
+
+def _run_concurrently(n, target):
+    results, errors = [None] * n, []
+
+    def run(i):
+        try:
+            results[i] = target()
+        except Exception as e:
+            errors.append(e)
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results, errors
+
+
+def test_generate_search_by_type_concurrent_first_calls_load_the_index_once(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # Regression test: every concurrent request that found the index not loaded yet
+    # loaded it from disk itself — e.g. 8 requests right after a server starts meant 8
+    # loads of the same index files, 8x the I/O and peak memory.
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+    n_requests = 8
+    found_not_loaded, everyone_found_it_not_loaded, loads = set(), threading.Event(), []
+    real_is_loaded, real_load = idx._is_single_index_loaded, idx._load_single_strategy
+
+    def is_loaded(*args, **kwargs):
+        loaded = real_is_loaded(*args, **kwargs)
+        if not loaded:
+            found_not_loaded.add(threading.get_ident())
+            if len(found_not_loaded) == n_requests:
+                everyone_found_it_not_loaded.set()
+        return loaded
+
+    def load(*args, **kwargs):
+        # Holds the load back until every request has checked and found the index not
+        # loaded, so all of them are in the race whatever the thread scheduling.
+        loads.append(everyone_found_it_not_loaded.wait(timeout=10))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(idx, "_is_single_index_loaded", is_loaded)
+    monkeypatch.setattr(idx, "_load_single_strategy", load)
+
+    results, errors = _run_concurrently(
+        n_requests, lambda: idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=2)
+    )
+
+    assert errors == []
+    assert loads == [True]
+    assert all(sorted(chunks) == ["texto dois", "texto um"] for chunks in results)
+
+
+def test_generate_search_by_type_loading_one_index_does_not_block_searches_on_another(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+    idx.load_indices(str(output_dir), ["doctype"], ["full"], use_gpu=False)
+    loading, release, loaded = threading.Event(), threading.Event(), threading.Event()
+    real_load = idx._load_single_strategy
+
+    def slow_load(*args, **kwargs):
+        loading.set()
+        release.wait(timeout=5)
+        real_load(*args, **kwargs)
+        loaded.set()
+
+    monkeypatch.setattr(idx, "_load_single_strategy", slow_load)
+    loader = threading.Thread(target=idx.generate_search_by_type, args=("texto", "doctype", "chunks", False))
+    loader.start()
+    assert loading.wait(timeout=5)
+
+    full = idx.generate_search_by_type("texto um", "doctype", "full", require_gpu=False, k=1)
+    searched_while_chunks_was_loading = not loaded.is_set()
+    release.set()
+    loader.join()
+
+    assert full == ["texto um"]
+    assert searched_while_chunks_was_loading
+
+
+def test_generate_search_by_type_concurrent_hybrid_searches_build_bm25_once(make_index, monkeypatch):
+    # Regression test: every concurrent hybrid search that found no cached BM25 index
+    # built its own, tokenizing the whole corpus again (8 requests: 8 builds).
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois", "texto tres"])
+    n_requests = 8
+    found_it_missing, everyone_found_it_missing, builds = set(), threading.Event(), []
+
+    class RecordsMisses(dict):
+        def get(self, document_type, default=None):
+            per_strategy = super().get(document_type, default)
+            if "chunks" not in (per_strategy or {}):
+                found_it_missing.add(threading.get_ident())
+                if len(found_it_missing) == n_requests:
+                    everyone_found_it_missing.set()
+            return per_strategy
+
+    class HeldBackBM25(search_module.BM25Okapi):
+        def __init__(self, corpus):
+            # Holds the build back until every search has found the BM25 index missing,
+            # so all of them are in the race whatever the thread scheduling.
+            builds.append(everyone_found_it_missing.wait(timeout=10))
+            super().__init__(corpus)
+
+    idx._bm25_indices = RecordsMisses()
+    monkeypatch.setattr(search_module, "BM25Okapi", HeldBackBM25)
+
+    results, errors = _run_concurrently(
+        n_requests, lambda: idx.generate_search_by_type("texto dois", "doctype", "chunks", require_gpu=False, k=3, use_hybrid=True)
+    )
+
+    assert errors == []
+    assert builds == [True]
+    assert all(chunks == results[0] and len(chunks) == 3 for chunks in results)
+
+
+def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # Regression test: with require_gpu=True and no GPU acceleration for the index
+    # (no CUDA), the loaded-check always failed, so
+    # every call reloaded the index from disk over the in-memory one — silently
+    # discarding documents added via add_new_documents since the index was saved.
+    idx = make_index(embedding_dim=4)
+    output_dir = _build_on_disk(idx, fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx.add_new_documents("doctype", [("novo.txt", "documento recem adicionado")])
+
+    chunks = idx.generate_search_by_type("documento recem adicionado", "doctype", "chunks", require_gpu=True, k=1)
+
+    assert chunks == ["documento recem adicionado"]
+    assert idx.indices["doctype"]["chunks"][0].ntotal == 3
+
+
+def test_generate_search_by_type_returns_texts_for_full_and_sections_strategies(make_index, fake_chat_provider, tmp_path):
+    # Regression test: the shortcut read metadata["chunk_text"], which only the
+    # "chunks" strategy stores — "full" (content) and "sections" (section_text)
+    # raised KeyError instead of returning their texts.
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True)
+    (data_dir / "doctype" / "doc.txt").write_text("Cabecalho\nPedidos finais do autor", encoding="utf-8")
+    idx = make_index(embedding_dim=4)
+    fake_chat_provider.responses.append({"sections": [{"name": "pedidos", "patterns": ["pedidos"]}]})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+
+    full = idx.generate_search_by_type("pedidos", "doctype", "full", require_gpu=False, k=1)
+    sections = idx.generate_search_by_type("pedidos", "doctype", "sections", require_gpu=False, k=2)
+
+    assert full == ["Cabecalho\nPedidos finais do autor"]
+    assert sorted(sections) == ["Cabecalho", "Pedidos finais do autor"]
+
+
 def test_generate_search_by_type_default_k_is_five(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, [f"texto numero {i}" for i in range(8)])
@@ -128,3 +406,38 @@ def test_generate_search_by_type_default_k_is_five(make_index):
     chunks = idx.generate_search_by_type("texto", "doctype", "chunks", require_gpu=False)
 
     assert len(chunks) == 5
+
+
+def test_generate_search_by_type_raises_when_there_is_no_index_to_load(make_index, tmp_path, monkeypatch):
+    # Regression test: a document type that was never built, or whose files aren't where
+    # the server looks, used to come back as [] — the same answer as a query that matched
+    # nothing, so a search endpoint would happily serve an answer with no sources.
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(tmp_path / "vazio"))
+    idx = make_index(embedding_dim=4)
+
+    with pytest.raises(IndexLoadError, match="doctype/chunks"):
+        idx.generate_search_by_type("qualquer coisa", "doctype", "chunks", require_gpu=False)
+
+
+def test_generate_search_by_type_raises_when_the_index_file_is_corrupted(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    (output_dir / "doctype" / "doctype_chunks.index").write_bytes(b"nao e um indice faiss")
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+
+    with pytest.raises(IndexLoadError):
+        idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False)
+
+
+def test_generate_search_by_type_does_not_raise_for_an_index_that_loads(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # The error is about a missing index, never about a query that found nothing: a
+    # working index that simply has no good match still returns a (possibly empty) list.
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+
+    assert idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=1) == ["texto um"]

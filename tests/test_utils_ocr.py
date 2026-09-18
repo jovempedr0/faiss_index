@@ -1,7 +1,37 @@
+import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
+
+import pytest
 
 from faiss_index import utils_ocr
+
+
+def _raise(error):
+    """Returns a function that raises `error` whatever it's called with."""
+    def _raiser(*args, **kwargs):
+        raise error
+    return _raiser
+
+
+def test_importing_utils_ocr_does_not_silence_the_host_applications_warnings():
+    # Regression test: utils_ocr called warnings.filterwarnings("ignore") at import
+    # time — a process-wide filter that silenced every warning in the host application
+    # (its own UserWarnings, numpy/library DeprecationWarnings...), not just this
+    # module's. Checked in a subprocess, since this test process already imported it.
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    script = "import warnings, faiss_index.utils_ocr; warnings.warn('host app warning', UserWarning)"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(src_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "host app warning" in result.stderr
 
 
 # --- merge_ocr_results ------------------------------------------------------
@@ -190,9 +220,46 @@ def test_get_vlm_provider_initializes_only_once_under_concurrent_access(monkeypa
     utils_ocr._vlm_provider = None  # don't leak state into other tests
 
 
+# --- convert_pdf_to_images ------------------------------------------------------
+
+def _fake_convert_from_path(calls):
+    """Mimics pdf2image.convert_from_path: one image per page in first_page..last_page (1-based)."""
+    def fake(file_path, dpi, output_folder, first_page, last_page, thread_count):
+        calls.append((first_page, last_page))
+        return [f"image-of-page-{page}" for page in range(first_page - 1, last_page)]
+    return fake
+
+
+def test_convert_pdf_to_images_maps_non_contiguous_pages_to_their_own_images(monkeypatch):
+    # Regression test: pages were rendered as one min..max range and zipped against
+    # problematic_pages, so with a gap ([0, 6, 7, 8]) pages 6/7/8 got the images of
+    # pages 1/2/3 — OCR re-read already-valid pages and never saw the broken ones.
+    calls = []
+    monkeypatch.setattr(utils_ocr, "convert_from_path", _fake_convert_from_path(calls))
+
+    images = utils_ocr.convert_pdf_to_images("fake.pdf", [0, 6, 7, 8], "/tmp/unused", ocr_dpi=300)
+
+    assert images == {
+        0: "image-of-page-0",
+        6: "image-of-page-6",
+        7: "image-of-page-7",
+        8: "image-of-page-8",
+    }
+    assert calls == [(1, 1), (7, 9)]  # valid pages 1-5 are never rendered
+
+
+def test_convert_pdf_to_images_no_problematic_pages_renders_nothing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(utils_ocr, "convert_from_path", _fake_convert_from_path(calls))
+
+    assert utils_ocr.convert_pdf_to_images("fake.pdf", [], "/tmp/unused", ocr_dpi=300) == {}
+    assert calls == []
+
+
 # --- process_problematic_pages (orchestration, real merge_ocr_results) -------
 
 def test_process_problematic_pages_orchestrates_convert_ocr_and_merge(monkeypatch):
+    monkeypatch.setattr(utils_ocr, "_ensure_tesseract_can_ocr", lambda lang: None)
     monkeypatch.setattr(
         utils_ocr, "convert_pdf_to_images",
         lambda file_path, problematic_pages, temp_dir, ocr_dpi: {1: "fake-image"},
@@ -206,6 +273,82 @@ def test_process_problematic_pages_orchestrates_convert_ocr_and_merge(monkeypatc
     assert result == ["t0", "texto via ocr"]
 
 
+# --- OCR that can't run at all ----------------------------------------------
+
+def test_ensure_tesseract_can_ocr_reports_a_missing_binary(monkeypatch):
+    def raise_not_found(config):
+        raise utils_ocr.pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", raise_not_found)
+
+    with pytest.raises(utils_ocr.OCRUnavailableError, match="not installed"):
+        utils_ocr._ensure_tesseract_can_ocr("por")
+
+
+def test_ensure_tesseract_can_ocr_reports_missing_language_data(monkeypatch):
+    # What `apt install tesseract-ocr` alone leaves you with: the binary works, but it
+    # can't read Portuguese, so every scanned page would OCR to nothing.
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng", "osd"])
+
+    with pytest.raises(utils_ocr.OCRUnavailableError, match="por.traineddata"):
+        utils_ocr._ensure_tesseract_can_ocr("por")
+
+
+def test_ensure_tesseract_can_ocr_accepts_an_installed_language(monkeypatch):
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng", "por"])
+
+    assert utils_ocr._ensure_tesseract_can_ocr("por") is None
+
+
+def test_process_problematic_pages_fails_before_rendering_when_ocr_cannot_run(monkeypatch):
+    # Regression test: without this check every page's own tesseract call failed, was
+    # logged as a generic per-page warning and became empty text, so a fully scanned
+    # document was indexed as if it had no content at all.
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng"])
+    rendered = []
+    monkeypatch.setattr(
+        utils_ocr, "convert_pdf_to_images",
+        lambda *a, **k: rendered.append(a) or {1: "fake-image"},
+    )
+
+    with pytest.raises(utils_ocr.OCRUnavailableError):
+        utils_ocr.process_problematic_pages(
+            "fake.pdf", all_text=["t0"], problematic_pages=[1], ocr_dpi=300, max_workers=None,
+        )
+
+    assert rendered == [], "pages were rendered before finding out OCR can't run"
+
+
+def test_process_problematic_pages_skips_the_tesseract_check_when_a_vlm_does_the_ocr(monkeypatch):
+    # FAISS_INDEX_OCR_VLM_MODEL replaces pytesseract entirely, so its language data is
+    # irrelevant — nothing about the local tesseract install should block that path.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", "glm-ocr")
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng"])
+    monkeypatch.setattr(
+        utils_ocr, "convert_pdf_to_images",
+        lambda file_path, problematic_pages, temp_dir, ocr_dpi: {1: "fake-image"},
+    )
+    monkeypatch.setattr(utils_ocr, "run_ocr_on_images", lambda images, max_workers: {1: "texto via vlm"})
+
+    result = utils_ocr.process_problematic_pages(
+        "fake.pdf", all_text=["t0"], problematic_pages=[1], ocr_dpi=300, max_workers=None,
+    )
+
+    assert result == ["t0", "texto via vlm"]
+
+
+def test_extract_text_from_file_ocr_fallback_does_not_swallow_ocr_unavailable(monkeypatch):
+    # Every other failure in here becomes "" (one unreadable file, not a broken setup);
+    # this one must reach the caller, or the whole corpus silently indexes as empty.
+    def raise_unavailable(file_path, ocr_dpi, max_workers):
+        raise utils_ocr.OCRUnavailableError("no tesseract")
+
+    monkeypatch.setattr(utils_ocr, "process_pdf_file", raise_unavailable)
+
+    with pytest.raises(utils_ocr.OCRUnavailableError):
+        utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf")
+
+
 # --- extract_text_from_file_ocr_fallback (orchestration) ---------------------
 
 def test_extract_text_from_file_ocr_fallback_pdf_goes_straight_to_process_pdf_file(monkeypatch):
@@ -216,16 +359,50 @@ def test_extract_text_from_file_ocr_fallback_pdf_goes_straight_to_process_pdf_fi
 def test_extract_text_from_file_ocr_fallback_converts_non_pdf_then_cleans_up_temp_file(monkeypatch, tmp_path):
     docx_path = tmp_path / "caso.docx"
     docx_path.write_text("dummy")
-    pdf_path = tmp_path / "caso.pdf"
-    pdf_path.write_text("dummy pdf")  # stand-in temp file for os.path.exists()/os.remove() to act on
+    converted_paths = []
 
-    monkeypatch.setattr(utils_ocr, "convert_any_to_pdf", lambda file_path, output_dir: str(pdf_path))
+    def fake_convert_any_to_pdf(file_path, output_dir):
+        pdf_path = Path(output_dir) / "caso.pdf"
+        pdf_path.write_text("dummy pdf")
+        converted_paths.append(pdf_path)
+        return str(pdf_path)
+
+    monkeypatch.setattr(utils_ocr, "convert_any_to_pdf", fake_convert_any_to_pdf)
     monkeypatch.setattr(utils_ocr, "process_pdf_file", lambda file_path, ocr_dpi, max_workers: "convertido")
 
     result = utils_ocr.extract_text_from_file_ocr_fallback(str(docx_path))
 
     assert result == "convertido"
-    assert not pdf_path.exists()
+    assert converted_paths[0].parent != tmp_path  # converted outside the source's folder
+    assert not converted_paths[0].exists()        # and cleaned up afterwards
+    assert list(tmp_path.iterdir()) == [docx_path]
+
+
+def test_extract_text_from_file_ocr_fallback_keeps_same_named_pdf_next_to_source(monkeypatch, tmp_path):
+    # Regression test: the conversion used to write into the source file's own folder.
+    # LibreOffice names its output <basename>.pdf (overwriting anything already there),
+    # and the cleanup then deleted that path — so indexing "caso.docx" destroyed an
+    # unrelated, user-owned "caso.pdf" in the same folder.
+    docx_path = tmp_path / "caso.docx"
+    docx_path.write_text("dummy docx")
+    user_pdf = tmp_path / "caso.pdf"
+    user_pdf.write_text("the user's own pdf")
+
+    def fake_libreoffice(command, check):
+        # Mirrors `libreoffice --headless --convert-to pdf <file> --outdir <dir>`.
+        source, out_dir = command[4], command[6]
+        (Path(out_dir) / (Path(source).stem + ".pdf")).write_text("converted from docx")
+
+    monkeypatch.setattr(utils_ocr, "run", fake_libreoffice)
+    monkeypatch.setattr(
+        utils_ocr, "process_pdf_file",
+        lambda file_path, ocr_dpi, max_workers: Path(file_path).read_text(),
+    )
+
+    result = utils_ocr.extract_text_from_file_ocr_fallback(str(docx_path))
+
+    assert result == "converted from docx"
+    assert user_pdf.read_text() == "the user's own pdf"
 
 
 def test_extract_text_from_file_ocr_fallback_returns_empty_string_on_error(monkeypatch):
@@ -235,3 +412,60 @@ def test_extract_text_from_file_ocr_fallback_returns_empty_string_on_error(monke
     monkeypatch.setattr(utils_ocr, "process_pdf_file", boom)
 
     assert utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf") == ""
+
+
+# --- a page whose OCR failed -------------------------------------------------
+
+def test_process_image_raises_when_the_vision_model_call_fails(monkeypatch):
+    # Regression test: any exception here used to become "", and merge_ocr_results then
+    # dropped the page — so a timeout or a 500 from the server running the OCR model
+    # silently removed that page from the document.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", "glm-ocr")
+    monkeypatch.setattr(utils_ocr, "_ocr_via_vlm", _raise(ConnectionError("connection refused")))
+
+    with pytest.raises(utils_ocr.OCRPageError, match="glm-ocr"):
+        utils_ocr.process_image("fake-image")
+
+
+def test_process_image_raises_when_tesseract_fails(monkeypatch):
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", None)
+    monkeypatch.setattr(utils_ocr, "preprocess_image", lambda img: img)
+    monkeypatch.setattr(utils_ocr.pytesseract, "image_to_string", _raise(RuntimeError("tesseract crashed")))
+
+    with pytest.raises(utils_ocr.OCRPageError, match="tesseract"):
+        utils_ocr.process_image("fake-image")
+
+
+def test_process_image_still_returns_empty_text_for_a_blank_page(monkeypatch):
+    # No failure: the page simply has nothing on it. That must stay a normal result.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", None)
+    monkeypatch.setattr(utils_ocr, "preprocess_image", lambda img: img)
+    monkeypatch.setattr(utils_ocr.pytesseract, "image_to_string", lambda img, lang, config: "   ")
+
+    assert utils_ocr.process_image("fake-image") == ""
+
+
+def test_run_ocr_on_images_propagates_a_failed_page(monkeypatch):
+    def fail_on_second(img):
+        if img == 1:
+            raise utils_ocr.OCRPageError("page 1 failed")
+        return "ok"
+
+    monkeypatch.setattr(utils_ocr, "process_image", fail_on_second)
+
+    with pytest.raises(utils_ocr.OCRPageError):
+        utils_ocr.run_ocr_on_images({0: 0, 1: 1}, max_workers=2)
+
+
+def test_extract_text_from_file_ocr_fallback_does_not_swallow_a_failed_page(monkeypatch):
+    monkeypatch.setattr(utils_ocr, "process_pdf_file", _raise(utils_ocr.OCRPageError("page failed")))
+
+    with pytest.raises(utils_ocr.OCRPageError):
+        utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf")
+
+
+def test_merge_ocr_results_warns_about_the_page_it_drops(caplog):
+    with caplog.at_level("WARNING"):
+        assert utils_ocr.merge_ocr_results(["t0"], [1], {1: ""}) == ["t0"]
+
+    assert "page 2" in caplog.text

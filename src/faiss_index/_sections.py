@@ -6,6 +6,7 @@ Composed into the class in `core.py`; not meant to be imported directly by users
 """
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -13,6 +14,34 @@ from . import constants
 from .i18n import _
 
 logger = logging.getLogger(__name__)
+
+
+class SectionSchemaError(RuntimeError):
+    """
+    Raised when the call that calibrates a document type's section schema failed — a
+    timeout, a connection error, an HTTP error, a response that isn't the JSON asked
+    for. Distinct from an empty schema, which is a real answer ("these documents have
+    no recurring sections"): a failed call says nothing about the documents, so it must
+    not be cached as one, and must not be a reason to discard sections built earlier.
+    """
+
+
+def _compile_section_patterns(patterns: List[str]) -> "re.Pattern[str]":
+    """
+    One regex matching any of a section's patterns as whole words/phrases, not as
+    arbitrary substrings — a calibrated pattern like "lar" must not fire inside
+    "declarar", nor "solicita" inside "solicitação". The word-boundary guard is only
+    added on sides where the pattern itself starts/ends with a word character, so
+    patterns such as "processo:" or "decido." still match as written.
+    """
+    alternatives = []
+    for pattern in patterns:
+        if not pattern:
+            continue
+        start = r"(?<!\w)" if re.match(r"\w", pattern) else ""
+        end = r"(?!\w)" if re.search(r"\w$", pattern) else ""
+        alternatives.append(start + re.escape(pattern) + end)
+    return re.compile("|".join(alternatives) or r"(?!)")  # (?!) never matches
 
 
 class SectionSchemaMixin:
@@ -50,14 +79,15 @@ class SectionSchemaMixin:
         sections = {"completo": text, "cabecalho": ""}
         sections.update({section_name: "" for section_name in schema})
 
+        matchers = [(section_name, _compile_section_patterns(patterns)) for section_name, patterns in schema.items()]
         lines = text.split('\n')
         current_section = "cabecalho"
 
         for line in lines:
             lower = line.lower().strip()
 
-            for section_name, patterns in schema.items():
-                if any(pattern in lower for pattern in patterns):
+            for section_name, matcher in matchers:
+                if matcher.search(lower):
                     current_section = section_name
                     break
 
@@ -85,6 +115,11 @@ class SectionSchemaMixin:
         Returns:
             Dict[str, List[str]]: The calibrated schema (section name -> text patterns).
             Empty dict if the LLM couldn't identify any section.
+
+        Raises:
+            ValueError: If `sample_texts` is empty.
+            SectionSchemaError: If the calibration call itself failed. Nothing is cached
+                in that case, so a later call tries again.
         """
         if document_type in self.section_schemas and not force_recalibrate:
             logger.info(_("Section schema for '%(document_type)s' is already cached. Skipping recalibration.") % {"document_type": document_type})
@@ -129,8 +164,16 @@ class SectionSchemaMixin:
         try:
             parsed = self.chat_provider.complete_structured(prompt, constants.SECTION_SCHEMA_JSON_SCHEMA)
         except Exception as e:
-            logger.error(_("Failed to calibrate section schema via LLM for '%(document_type)s': %(error)s") % {"document_type": document_type, "error": e}, exc_info=True)
-            return {}
+            raise SectionSchemaError(
+                # The provider's own model, not section_extraction_model: a chat_provider
+                # passed in was built elsewhere, and may well speak to another model.
+                _("Failed to calibrate the section schema for '%(document_type)s' via %(model)s: %(error)s")
+                % {
+                    "document_type": document_type,
+                    "model": getattr(self.chat_provider, "model", self.section_extraction_model),
+                    "error": e,
+                }
+            ) from e
 
         schema: Dict[str, List[str]] = {}
         for section in parsed.get("sections", []):

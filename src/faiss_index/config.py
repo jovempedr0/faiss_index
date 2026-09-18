@@ -17,14 +17,15 @@ from .i18n import _
 logger = logging.getLogger(__name__)
 
 # --- .env -------------------------------------------------------------------------
-# FAISS_INDEX_DOTENV_PATH lets you point to a specific .env; if absent, load_dotenv()
-# looks for a .env starting from the current directory and walking up the tree,
-# without assuming any specific project's directory depth.
+# Only when asked for: set FAISS_INDEX_DOTENV_PATH to the .env this library should
+# load. Importing a library shouldn't put variables into the process — this used to
+# search for a .env from the working directory upwards and load it, which fills in
+# whatever that file holds (not just this library's settings) for every other library
+# in the process too, from a file nobody here chose. An application that wants that
+# calls load_dotenv() itself, before importing this package.
 _dotenv_path = os.environ.get('FAISS_INDEX_DOTENV_PATH')
 if _dotenv_path:
     load_dotenv(dotenv_path=_dotenv_path)
-else:
-    load_dotenv()
 
 # --- NLTK data ------------------------------------------------------------------
 # NLTK_DATA_PATH lets you point to a specific NLTK data directory. If absent, we just
@@ -50,7 +51,6 @@ DEFAULT_AUTO_INDEX_THRESHOLDS = (10_000, 80_000)
 DEFAULT_IVF_NPROBE = 8
 DEFAULT_PQ_M = 8
 DEFAULT_PQ_NBITS = 8
-DEFAULT_USE_MPS = True
 
 # --- Path defaults ---------------------------------------------------------------
 DEFAULT_BASE_DATA_DIR = os.environ.get('FAISS_INDEX_BASE_DATA_DIR', './data')

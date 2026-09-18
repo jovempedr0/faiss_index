@@ -16,6 +16,12 @@ EMBEDDING_DIMENSIONS = {
 # Language used to load the NLTK stopword list.
 STOPWORDS_LANGUAGE = "portuguese"
 
+# Encoding `read_document` falls back to for a .txt file that isn't valid UTF-8 and
+# carries no byte-order mark — what Windows and older systems export Latin-script text
+# as. Single-byte, so it decodes almost anything: it's a last resort, after the BOM and
+# UTF-8, and using it is logged.
+TEXT_FALLBACK_ENCODING = "cp1252"
+
 # Max number of characters of a text sent to the embeddings API (get_embeddings).
 MAX_EMBEDDING_INPUT_CHARS = 8000
 
@@ -26,8 +32,15 @@ DEFAULT_CHUNK_SIZE_WORDS = 500
 MAX_SECTION_SAMPLE_DOCS = 5
 MAX_SECTION_SAMPLE_CHARS = 4000
 
-# Min number of training points per cluster when sizing nlist in IVFFlat/IVFPQ.
+# Min number of training points per cluster when sizing nlist in IVFFlat/IVFSQ8/IVFPQ.
 MIN_TRAINING_POINTS_PER_CLUSTER = 30
+
+# Min number of training points for IVFSQ8's scalar quantizer, which learns each
+# dimension's [min, max] range from them and clips any vector added later (e.g. via
+# add_new_documents) to that range. Few points give ranges too narrow for later
+# vectors: on real 1024-dim embeddings, training on 300 / 1000 / all 10.8k of them
+# and then adding all 10.8k gave recall@10 98.2% / 98.9% / 99.6% (probing every list).
+MIN_SQ8_TRAINING_POINTS = 1000
 
 # JSON Schema (provider-agnostic — no OpenAI-specific envelope) describing the
 # structured output requested in the chat call that infers the section schema of a

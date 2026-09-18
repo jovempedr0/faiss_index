@@ -5,7 +5,6 @@ import pdfplumber
 import tempfile
 import threading
 import pytesseract
-import warnings
 from io import BytesIO
 from pathlib import Path
 
@@ -20,13 +19,42 @@ from . import config
 from .i18n import _
 from .providers import VisionProvider, OpenAICompatibleChatProvider
 
-warnings.filterwarnings("ignore")
-
 logger = logging.getLogger(__name__)
 
 # Some OCR-purpose vision models (e.g. Baidu's Unlimited-OCR) emit per-region detections
 # as "<|det|>type [x1, y1, x2, y2]<|/det|>text", mixed with free-form preamble text.
 _VLM_DETECTION_TAG_RE = re.compile(r'<\|det\|>.*?<\|/det\|>([^<]*)')
+
+# Language pytesseract OCRs pages in (its traineddata must be installed).
+TESSERACT_LANG = 'por'
+
+
+class OCRError(RuntimeError):
+    """
+    Base for OCR failures that must not be turned into missing text. Extraction errors
+    elsewhere in here degrade to an empty string — one file this library couldn't read —
+    but a page whose OCR *failed* is indistinguishable, downstream, from a page that
+    genuinely holds no text, and would be indexed as a document that is quietly
+    incomplete.
+    """
+
+
+class OCRUnavailableError(OCRError):
+    """
+    Raised when pages need OCR but tesseract can't run it at all here — not installed,
+    or missing the language data. A setup problem rather than something wrong with one
+    page or file, so it isn't swallowed like the other per-page/per-file errors.
+    """
+
+
+class OCRPageError(OCRError):
+    """
+    Raised when the OCR backend failed on a page: a tesseract crash, or — the likely one
+    when `config.OCR_VLM_MODEL` is set — a timeout, a connection error or an HTTP error
+    from the server running the vision model. Fails the document rather than dropping
+    that page from it.
+    """
+
 
 _vlm_provider: VisionProvider = None
 # Guards _vlm_provider's lazy init below: run_ocr_on_images processes pages
@@ -118,28 +146,30 @@ def extract_text_from_file_ocr_fallback(file_path: str, ocr_dpi: int = 300, max_
     Returns:
         str: The text extracted from the file, concatenated into a single string with
              line breaks between pages/paragraphs. Returns an empty string on error.
-    """
-    temp_pdf_path = None
 
+    Raises:
+        OCRUnavailableError: If some page needs OCR and tesseract can't run it (see
+            `_ensure_tesseract_can_ocr`) — not turned into an empty string, since every
+            scanned page would silently come out empty.
+    """
     try:
         if file_path.lower().endswith(".pdf"):
             return process_pdf_file(file_path, ocr_dpi, max_workers)
-        else:
-            logger.info(_("Converting file to PDF..."))
-            temp_pdf_path = convert_any_to_pdf(file_path, os.path.dirname(file_path))
 
+        logger.info(_("Converting file to PDF..."))
+        # Converts into a private temporary directory, never next to the source file:
+        # LibreOffice names its output <basename>.pdf, so converting "contrato.docx" in
+        # place would silently overwrite a user's own "contrato.pdf" sitting alongside
+        # it — and the temp-file cleanup would then delete that PDF for good.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_pdf_path = convert_any_to_pdf(file_path, temp_dir)
             return process_pdf_file(temp_pdf_path, ocr_dpi, max_workers)
 
+    except OCRError:
+        raise
     except Exception as e:
         logger.error(_("Error processing file %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
         return ""
-    finally:
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.remove(temp_pdf_path)
-                logger.info(_("Temporary file removed: %(temp_pdf_path)s") % {"temp_pdf_path": temp_pdf_path})
-            except OSError as e:
-                logger.error(_("Error trying to delete temporary file %(temp_pdf_path)s: %(error)s") % {"temp_pdf_path": temp_pdf_path, "error": e})
 
 
 def process_pdf_file(file_path: str, ocr_dpi: int, max_workers: int) -> str:
@@ -222,6 +252,11 @@ def process_problematic_pages(
         list[str]: List of page texts, with problematic pages processed via OCR.
     """
     logger.info(_("Using OCR as fallback for %(count)s problematic pages.") % {"count": len(problematic_pages)})
+    if not config.OCR_VLM_MODEL:
+        # Checked once for the document, before rendering any page: otherwise each
+        # page's own tesseract call fails, gets logged as a generic warning and becomes
+        # empty text — a fully scanned document then silently had no content at all.
+        _ensure_tesseract_can_ocr(TESSERACT_LANG)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         images = convert_pdf_to_images(
@@ -230,6 +265,33 @@ def process_problematic_pages(
         ocr_results = run_ocr_on_images(images, max_workers)
         logger.info(_("OCR completed for problematic pages."))
         return merge_ocr_results(all_text, problematic_pages, ocr_results)
+
+
+def _ensure_tesseract_can_ocr(lang: str) -> None:
+    """
+    Raises OCRUnavailableError, saying how to fix it, if the tesseract binary isn't
+    found or has no `lang` traineddata (e.g. `apt install tesseract-ocr` ships only
+    English and the OS script data). Honors TESSDATA_PREFIX, like the OCR calls do.
+    """
+    try:
+        available = pytesseract.get_languages(config='')
+    except pytesseract.TesseractNotFoundError as e:
+        raise OCRUnavailableError(
+            _("Tesseract is not installed or not on the PATH, and it's needed to OCR pages with no "
+              "extractable text. Install it with the '%(lang)s' language data (e.g. 'apt install "
+              "tesseract-ocr tesseract-ocr-%(lang)s' or 'brew install tesseract tesseract-lang'), set "
+              "FAISS_INDEX_OCR_VLM_MODEL to OCR with a vision model instead, or pass a text_extractor "
+              "to index text extracted outside this library.") % {"lang": lang}
+        ) from e
+    if lang not in available:
+        raise OCRUnavailableError(
+            _("Tesseract has no '%(lang)s' language data (%(lang)s.traineddata; installed: %(available)s), "
+              "and it's needed to OCR pages with no extractable text. Install it (e.g. 'apt install "
+              "tesseract-ocr-%(lang)s' or 'brew install tesseract-lang'), point TESSDATA_PREFIX at a tessdata "
+              "directory that has %(lang)s.traineddata, set FAISS_INDEX_OCR_VLM_MODEL to OCR with a vision "
+              "model instead, or pass a text_extractor to index text extracted outside this "
+              "library.") % {"lang": lang, "available": ", ".join(available) or "none"}
+        )
 
 
 def convert_pdf_to_images(
@@ -251,19 +313,34 @@ def convert_pdf_to_images(
         dict[int, Any]: A dictionary where the keys are the converted pages' indices and
             the values are the corresponding image objects.
     """
-    if not problematic_pages:
-        return {}
+    images = {}
+    # One render per run of consecutive pages, each image keyed by its own page
+    # number. A single min..max render zipped against `problematic_pages` only lines
+    # up when those pages are contiguous — with a gap (e.g. [0, 6, 7]) page 6 got page
+    # 1's image, and valid pages in between were rendered at OCR DPI for nothing.
+    for first, last in _consecutive_page_runs(problematic_pages):
+        run_images = convert_from_path(
+            file_path,
+            dpi=ocr_dpi,
+            output_folder=temp_dir,
+            first_page=first + 1,
+            last_page=last + 1,
+            thread_count=os.cpu_count() or 1
+        )
+        images.update(zip(range(first, last + 1), run_images))
 
-    images = convert_from_path(
-        file_path,
-        dpi=ocr_dpi,
-        output_folder=temp_dir,
-        first_page=min(problematic_pages) + 1,
-        last_page=max(problematic_pages) + 1,
-        thread_count=os.cpu_count() or 1
-    )
+    return images
 
-    return dict(zip(problematic_pages, images))
+
+def _consecutive_page_runs(pages: list[int]) -> list[tuple[int, int]]:
+    """Groups page indices into (first, last) runs of consecutive pages: [0, 2, 3] -> [(0, 0), (2, 3)]."""
+    runs: list[tuple[int, int]] = []
+    for page in sorted(pages):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], page)
+        else:
+            runs.append((page, page))
+    return runs
 
 
 def preprocess_image(img):
@@ -314,7 +391,7 @@ def _ocr_via_vlm(img) -> str:
     return _extract_text_from_vlm_response(raw_text)
 
 
-def process_image(img, lang='por'):
+def process_image(img, lang=TESSERACT_LANG):
     """
     Processes a single image using OCR (Optical Character Recognition). Runs via a
     vision-capable chat model when `config.OCR_VLM_MODEL` is set (see `_ocr_via_vlm`),
@@ -326,10 +403,11 @@ def process_image(img, lang='por'):
             (Portuguese). Not used when OCR runs via `config.OCR_VLM_MODEL`.
 
     Returns:
-        str: Text extracted from the image. Returns an empty string on error.
+        str: Text extracted from the image (empty if the page genuinely has no text).
 
-    Exceptions:
-        On error during processing, a warning is logged and an empty string is returned.
+    Raises:
+        OCRPageError: If the OCR backend failed on this page — its text is unknown, and
+            returning "" would silently drop the page from the document (see `OCRError`).
     """
     try:
         if config.OCR_VLM_MODEL:
@@ -342,8 +420,12 @@ def process_image(img, lang='por'):
         )
         return text.strip()
     except Exception as e:
-        logger.warning(_("Error in image OCR: %(error)s") % {"error": e})
-        return ""
+        raise OCRPageError(
+            _("OCR failed on a page (%(backend)s): %(error)s") % {
+                "backend": f"vision model '{config.OCR_VLM_MODEL}'" if config.OCR_VLM_MODEL else f"tesseract '{lang}'",
+                "error": e,
+            }
+        ) from e
 
 
 def run_ocr_on_images(images: dict[int, Any], max_workers: int) -> dict[int, str]:
@@ -392,6 +474,12 @@ def merge_ocr_results(all_text: list[str], problematic_pages: list[int], ocr_res
             text = ocr_results.get(i, "")
             if text:
                 merged.append(text)
+            else:
+                # OCR ran and came back with nothing. A blank page reads exactly like
+                # this, so it isn't an error — but it's the one case where the document
+                # legitimately ends up shorter than its page count, and silence here is
+                # what made missing pages impossible to notice.
+                logger.warning(_("OCR found no text on page %(page)s; it is not part of the extracted document.") % {"page": i + 1})
         else:
             merged.append(next(valid_pages))
 
