@@ -59,6 +59,24 @@ def test_add_new_documents_with_structure_provider(make_index, fake_structure_pr
     assert {m["section_name"] for m in metadata} == {"intro", "resumo"}
 
 
+def test_strategy_with_no_vectors_is_not_registered_as_loaded(make_index, fake_structure_provider, tmp_path):
+    # Regression test: a strategy that produced no vectors was stored as
+    # (None, [], None), so searching it raised AttributeError ('NoneType' object has no
+    # attribute 'search'/'ntotal') and add_new_documents crashed on index.add.
+    idx = make_index(embedding_dim=4, structure_provider=fake_structure_provider)  # finds no sections
+    (tmp_path / "data" / "doctype").mkdir(parents=True)
+    (tmp_path / "data" / "doctype" / "doc1.txt").write_text("texto sem estrutura", encoding="utf-8")
+
+    idx.build_indices("doctype", base_data_dir=str(tmp_path / "data"), output_index_dir=str(tmp_path / "out"))
+
+    assert set(idx.indices["doctype"]) == {"full", "chunks"}
+    assert not idx.is_index_loaded(["doctype"], ["sections"], require_gpu=False)
+    assert idx.evaluate_strategy("texto", "doctype", "sections") == {}
+    assert idx.evaluate_strategy_hybrid("texto", "doctype", "sections") == {}
+    idx.add_new_documents("doctype", [(str(tmp_path / "novo.txt"), "outro texto")])
+    assert idx.indices["doctype"]["chunks"][0].ntotal == 2
+
+
 def test_build_indices_without_structure_provider_still_calibrates(make_index, fake_chat_provider, tmp_path):
     idx = make_index(embedding_dim=4)  # no structure_provider: today's behavior
     document_type = "doctype"

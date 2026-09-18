@@ -316,7 +316,20 @@ class SearchMixin:
                   strategy costs as LLM context ("full" finds the right file easily
                   precisely by returning whole documents).
                 - "n_queries": number of queries evaluated.
+
+        Raises:
+            ValueError: If one of `strategies` isn't loaded for `document_type` — its
+                metrics would otherwise come out as all zeros, like a strategy that
+                finds nothing.
         """
+        loaded = self.indices.get(document_type, {})
+        missing = [strategy for strategy in strategies if strategy not in loaded]
+        if missing:
+            raise ValueError(
+                f"Strategies not loaded for document type '{document_type}': {missing} "
+                f"(loaded: {sorted(loaded)}). Load them with load_indices before evaluating."
+            )
+
         normalize = lambda text: " ".join(text.split())
         report = {}
         for strategy in strategies:

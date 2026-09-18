@@ -78,6 +78,17 @@ pip install -e ".[ocr]"
    `pytesseract` can be swapped for a vision-capable chat model via
    `FAISS_INDEX_OCR_VLM_MODEL` — see
    [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules).
+   None of this is needed if your own pipeline already extracts the text: see
+   [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
+
+   Tesseract also needs the **`por` language data** (`por.traineddata`), which
+   `apt install tesseract-ocr` does *not* include — install `tesseract-ocr-por`
+   (Debian/Ubuntu) or `tesseract-lang` (Homebrew), or point `TESSDATA_PREFIX` at a
+   tessdata directory that has it. Without it, a document with scanned pages raises
+   `utils_ocr.OCRUnavailableError` instead of quietly losing those pages: OCR that
+   can't run at all is a setup problem, and swallowing it means indexing documents
+   that look complete but aren't. `FAISS_INDEX_OCR_VLM_MODEL` and `text_extractor`
+   both bypass this check entirely — neither uses tesseract.
 
 ## Core concepts
 
@@ -130,6 +141,16 @@ type.
 If the LLM can't identify any section (a document with no recognizable structure),
 the `sections` strategy is simply skipped for that type — `full` and `chunks` keep
 working normally.
+
+A calibration **call that fails** (timeout, connection error, a response that isn't the
+JSON asked for) is a different thing entirely, and is treated as one: it raises
+`SectionSchemaError`, nothing is cached, and `build_indices` logs the error, builds
+`full`/`chunks` as usual and leaves the `sections` files of the previous build exactly
+where they are — they then describe the corpus of the last successful build, which is
+warned about, and the next build rebuilds them. Reading a failed call as "no sections
+here" would cache that answer for the life of the instance (also stopping the schema on
+disk from ever being loaded again) and delete a sections index that costs one embedding
+call per section to rebuild.
 
 #### Alternative: structure-aware extraction via Docling
 
@@ -492,6 +513,34 @@ including the added ones — and the section schema), in the layout `load_indice
 reads. Saving over the directory the indices were loaded from is safe. Reloading or
 unloading a strategy before saving discards what was added to it.
 
+### Indexing text extracted elsewhere
+
+Everything above assumes this library extracts the text (`read_document`: direct read
+for `.txt`, `pdfplumber` + OCR fallback for the rest). When another pipeline already
+does that — a different OCR engine, a document-understanding API, a cache or database
+filled by an earlier job — pass a `text_extractor` and it is used instead, for every
+file:
+
+```python
+def extract(file_path: str) -> str:
+    return my_ocr_service.extract(file_path)  # or: cache[file_path], db.fetch(...), ...
+
+idx = FaissDocumentIndex(base_path="./data", text_extractor=extract)
+idx.build_indices(document_type="contract", base_data_dir="./data", output_index_dir="./faiss_index")
+```
+
+`build_indices` still walks the directory and still records the real file path in each
+entry's `metadata["file"]` — only the extraction step changes, so chunking, sections,
+search and the on-disk layout behave exactly as they do otherwise. Nothing here opens
+the files, so the `[ocr]` extra isn't needed and neither is a working tesseract.
+An extractor that raises for one file is treated like any other read error: that
+document is logged and skipped, the build carries on.
+
+For documents arriving one at a time into an index that's already loaded, the same text
+can go straight to
+[`add_new_documents`](#adding-documents-without-rebuilding-the-index), which takes
+`(file_path, text)` pairs and never reads the file either.
+
 ### Managing memory in long-running processes
 
 In a process that serves multiple requests (e.g.: a server), load on demand and
@@ -510,7 +559,7 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, text_extractor=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
@@ -519,6 +568,8 @@ built from `openai_key`/`embedding_model`/`section_extraction_model`; `rerank_pr
 `structure_provider` have no default at all (opt-in capabilities, not part of the
 OpenAI-compatible path) — see
 [Plugging in a custom provider](#plugging-in-a-custom-provider).
+`text_extractor` replaces `read_document`'s own extraction with a callable of yours —
+see [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 
 ### Building indices
 
@@ -526,15 +577,20 @@ OpenAI-compatible path) — see
   Reads all supported documents under `base_data_dir/document_type/`, calibrates
   the section schema if needed, generates embeddings (in batches), and
   builds+saves the `full`, `sections` (if a schema exists), and `chunks` indices.
+  A strategy that ends up with no vectors (e.g. `sections` when no document has a
+  section) isn't registered as loaded, and any files a previous build left for it in
+  the output directory are removed — so `load_indices` can't serve an outdated one.
 
 - **`register_document_type(document_type, sample_texts, force_recalibrate=False)`**
   Manually calibrates (via LLM) the section schema for a type, from sample texts.
   Useful for recalibrating (`force_recalibrate=True`) or calibrating before
-  indexing.
+  indexing. Raises `SectionSchemaError` if the call itself failed, caching nothing so
+  a later call tries again.
 
 - **`add_new_documents(document_type, new_docs)`**
   Adds new documents (`List[Tuple[path, text]]`) to already-loaded indices, for
-  every strategy that already exists for that `document_type`.
+  every strategy that already exists for that `document_type`. Raises `ValueError`
+  if no index is loaded for it.
 
 ### Search
 
@@ -560,7 +616,8 @@ OpenAI-compatible path) — see
   Measures each strategy against queries with known answers (`{"query",
   "relevant_files", "relevant_text"?}`): `recall_at_k`, `mrr`, `passage_recall_at_k`
   and `avg_result_chars`. The way to pick a strategy — see
-  [Comparing strategies](#comparing-strategies-and-picking-the-best-one).
+  [Comparing strategies](#comparing-strategies-and-picking-the-best-one). Raises
+  `ValueError` if one of `strategies` isn't loaded for `document_type`.
 
 - **`calculate_heuristic_score(comparison_results, keywords=None) -> Dict`** — *deprecated*
   Scores each strategy (speed, distance/RRF score, variance, file diversity, and,
@@ -583,6 +640,8 @@ OpenAI-compatible path) — see
 
 - **`load_indices(path_indices, document_types, strategies, use_gpu=True) -> dict`**
   Loads the index, metadata, embeddings (`mmap`), and section schema from disk.
+  A strategy whose files are missing (or fail to load) is logged and skipped; a
+  `document_type` for which nothing loads doesn't show up in `idx.indices` at all.
   `use_gpu` here is the **CUDA** path (faiss-gpu; irrelevant on macOS).
   When the installed FAISS has no CUDA support (the case for `faiss-cpu`, the only
   variant installable on macOS), this is detected before trying to move the index
@@ -596,14 +655,19 @@ OpenAI-compatible path) — see
 - **`save_indices(document_type, output_index_dir=config.DEFAULT_OUTPUT_INDEX_DIR)`**
   Persists the loaded strategies of `document_type`, including documents added with
   `add_new_documents`, in the [on-disk layout](#on-disk-file-layout). Raises
-  `ValueError` if a strategy's index, metadata and embedding rows don't line up.
+  `ValueError` if no index is loaded for `document_type`, or if a strategy's index,
+  metadata and embedding rows don't line up.
 
 - **`unload_indices(document_type, strategy=None)`** / **`unload_all_indices()`**
   Frees indices from memory.
 
 ### Document reading/processing (used internally, but exposed)
 
-- **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback).
+- **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback),
+  or delegates to the constructor's `text_extractor` when one was given. A `.txt` file is
+  decoded by its byte-order mark when it has one (UTF-8/16/32, the mark stripped), else as
+  UTF-8, else as `constants.TEXT_FALLBACK_ENCODING` (`cp1252` — what Windows and older
+  systems export, logged as a warning when it's what worked).
 - **`extract_sections(text, document_type) -> Dict[str, str]`** — uses the calibrated schema.
 - **`get_embeddings(texts, prefix="") -> np.ndarray`** — generates embeddings in batches
   (`prefix` is prepended to each non-empty text).

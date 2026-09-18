@@ -16,6 +16,12 @@ EMBEDDING_DIMENSIONS = {
 # Language used to load the NLTK stopword list.
 STOPWORDS_LANGUAGE = "portuguese"
 
+# Encoding `read_document` falls back to for a .txt file that isn't valid UTF-8 and
+# carries no byte-order mark — what Windows and older systems export Latin-script text
+# as. Single-byte, so it decodes almost anything: it's a last resort, after the BOM and
+# UTF-8, and using it is logged.
+TEXT_FALLBACK_ENCODING = "cp1252"
+
 # Max number of characters of a text sent to the embeddings API (get_embeddings).
 MAX_EMBEDDING_INPUT_CHARS = 8000
 

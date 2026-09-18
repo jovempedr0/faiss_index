@@ -77,6 +77,19 @@ def test_evaluate_retrieval_reports_recall_mrr_passage_recall_and_result_size(ma
     assert chunks["avg_result_chars"] == pytest.approx(np.mean([a, b, a, b, c, b]))  # top-2: (a,b) (a,b) (c,b)
 
 
+def test_evaluate_retrieval_raises_for_a_strategy_that_is_not_loaded(make_index):
+    # Regression test: a strategy that isn't loaded (e.g. the typo "chunk") searched
+    # nothing and came back as recall/mrr 0.0 — indistinguishable from a bad strategy.
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["primeiro texto", "segundo texto"])
+    labeled = [{"query": "texto", "relevant_files": ["doc_0.txt"]}]
+
+    with pytest.raises(ValueError, match=r"\['chunk'\].*loaded: \['chunks'\]"):
+        idx.evaluate_retrieval(labeled, document_type="doctype", strategies=["chunks", "chunk"])
+    with pytest.raises(ValueError, match="'outro_tipo'"):
+        idx.evaluate_retrieval(labeled, document_type="outro_tipo", strategies=["chunks"])
+
+
 def test_calculate_heuristic_score_and_generate_search_are_deprecated(make_index):
     idx = make_index(embedding_dim=4)
     _build_chunks_index(idx, ["primeiro texto", "segundo texto"])

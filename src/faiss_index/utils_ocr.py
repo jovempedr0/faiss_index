@@ -25,6 +25,37 @@ logger = logging.getLogger(__name__)
 # as "<|det|>type [x1, y1, x2, y2]<|/det|>text", mixed with free-form preamble text.
 _VLM_DETECTION_TAG_RE = re.compile(r'<\|det\|>.*?<\|/det\|>([^<]*)')
 
+# Language pytesseract OCRs pages in (its traineddata must be installed).
+TESSERACT_LANG = 'por'
+
+
+class OCRError(RuntimeError):
+    """
+    Base for OCR failures that must not be turned into missing text. Extraction errors
+    elsewhere in here degrade to an empty string — one file this library couldn't read —
+    but a page whose OCR *failed* is indistinguishable, downstream, from a page that
+    genuinely holds no text, and would be indexed as a document that is quietly
+    incomplete.
+    """
+
+
+class OCRUnavailableError(OCRError):
+    """
+    Raised when pages need OCR but tesseract can't run it at all here — not installed,
+    or missing the language data. A setup problem rather than something wrong with one
+    page or file, so it isn't swallowed like the other per-page/per-file errors.
+    """
+
+
+class OCRPageError(OCRError):
+    """
+    Raised when the OCR backend failed on a page: a tesseract crash, or — the likely one
+    when `config.OCR_VLM_MODEL` is set — a timeout, a connection error or an HTTP error
+    from the server running the vision model. Fails the document rather than dropping
+    that page from it.
+    """
+
+
 _vlm_provider: VisionProvider = None
 # Guards _vlm_provider's lazy init below: run_ocr_on_images processes pages
 # concurrently via a ThreadPoolExecutor, so without this lock, several threads could
@@ -115,6 +146,11 @@ def extract_text_from_file_ocr_fallback(file_path: str, ocr_dpi: int = 300, max_
     Returns:
         str: The text extracted from the file, concatenated into a single string with
              line breaks between pages/paragraphs. Returns an empty string on error.
+
+    Raises:
+        OCRUnavailableError: If some page needs OCR and tesseract can't run it (see
+            `_ensure_tesseract_can_ocr`) — not turned into an empty string, since every
+            scanned page would silently come out empty.
     """
     try:
         if file_path.lower().endswith(".pdf"):
@@ -129,6 +165,8 @@ def extract_text_from_file_ocr_fallback(file_path: str, ocr_dpi: int = 300, max_
             temp_pdf_path = convert_any_to_pdf(file_path, temp_dir)
             return process_pdf_file(temp_pdf_path, ocr_dpi, max_workers)
 
+    except OCRError:
+        raise
     except Exception as e:
         logger.error(_("Error processing file %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
         return ""
@@ -214,6 +252,11 @@ def process_problematic_pages(
         list[str]: List of page texts, with problematic pages processed via OCR.
     """
     logger.info(_("Using OCR as fallback for %(count)s problematic pages.") % {"count": len(problematic_pages)})
+    if not config.OCR_VLM_MODEL:
+        # Checked once for the document, before rendering any page: otherwise each
+        # page's own tesseract call fails, gets logged as a generic warning and becomes
+        # empty text — a fully scanned document then silently had no content at all.
+        _ensure_tesseract_can_ocr(TESSERACT_LANG)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         images = convert_pdf_to_images(
@@ -222,6 +265,33 @@ def process_problematic_pages(
         ocr_results = run_ocr_on_images(images, max_workers)
         logger.info(_("OCR completed for problematic pages."))
         return merge_ocr_results(all_text, problematic_pages, ocr_results)
+
+
+def _ensure_tesseract_can_ocr(lang: str) -> None:
+    """
+    Raises OCRUnavailableError, saying how to fix it, if the tesseract binary isn't
+    found or has no `lang` traineddata (e.g. `apt install tesseract-ocr` ships only
+    English and the OS script data). Honors TESSDATA_PREFIX, like the OCR calls do.
+    """
+    try:
+        available = pytesseract.get_languages(config='')
+    except pytesseract.TesseractNotFoundError as e:
+        raise OCRUnavailableError(
+            _("Tesseract is not installed or not on the PATH, and it's needed to OCR pages with no "
+              "extractable text. Install it with the '%(lang)s' language data (e.g. 'apt install "
+              "tesseract-ocr tesseract-ocr-%(lang)s' or 'brew install tesseract tesseract-lang'), set "
+              "FAISS_INDEX_OCR_VLM_MODEL to OCR with a vision model instead, or pass a text_extractor "
+              "to index text extracted outside this library.") % {"lang": lang}
+        ) from e
+    if lang not in available:
+        raise OCRUnavailableError(
+            _("Tesseract has no '%(lang)s' language data (%(lang)s.traineddata; installed: %(available)s), "
+              "and it's needed to OCR pages with no extractable text. Install it (e.g. 'apt install "
+              "tesseract-ocr-%(lang)s' or 'brew install tesseract-lang'), point TESSDATA_PREFIX at a tessdata "
+              "directory that has %(lang)s.traineddata, set FAISS_INDEX_OCR_VLM_MODEL to OCR with a vision "
+              "model instead, or pass a text_extractor to index text extracted outside this "
+              "library.") % {"lang": lang, "available": ", ".join(available) or "none"}
+        )
 
 
 def convert_pdf_to_images(
@@ -321,7 +391,7 @@ def _ocr_via_vlm(img) -> str:
     return _extract_text_from_vlm_response(raw_text)
 
 
-def process_image(img, lang='por'):
+def process_image(img, lang=TESSERACT_LANG):
     """
     Processes a single image using OCR (Optical Character Recognition). Runs via a
     vision-capable chat model when `config.OCR_VLM_MODEL` is set (see `_ocr_via_vlm`),
@@ -333,10 +403,11 @@ def process_image(img, lang='por'):
             (Portuguese). Not used when OCR runs via `config.OCR_VLM_MODEL`.
 
     Returns:
-        str: Text extracted from the image. Returns an empty string on error.
+        str: Text extracted from the image (empty if the page genuinely has no text).
 
-    Exceptions:
-        On error during processing, a warning is logged and an empty string is returned.
+    Raises:
+        OCRPageError: If the OCR backend failed on this page — its text is unknown, and
+            returning "" would silently drop the page from the document (see `OCRError`).
     """
     try:
         if config.OCR_VLM_MODEL:
@@ -349,8 +420,12 @@ def process_image(img, lang='por'):
         )
         return text.strip()
     except Exception as e:
-        logger.warning(_("Error in image OCR: %(error)s") % {"error": e})
-        return ""
+        raise OCRPageError(
+            _("OCR failed on a page (%(backend)s): %(error)s") % {
+                "backend": f"vision model '{config.OCR_VLM_MODEL}'" if config.OCR_VLM_MODEL else f"tesseract '{lang}'",
+                "error": e,
+            }
+        ) from e
 
 
 def run_ocr_on_images(images: dict[int, Any], max_workers: int) -> dict[int, str]:
@@ -399,6 +474,12 @@ def merge_ocr_results(all_text: list[str], problematic_pages: list[int], ocr_res
             text = ocr_results.get(i, "")
             if text:
                 merged.append(text)
+            else:
+                # OCR ran and came back with nothing. A blank page reads exactly like
+                # this, so it isn't an error — but it's the one case where the document
+                # legitimately ends up shorter than its page count, and silence here is
+                # what made missing pages impossible to notice.
+                logger.warning(_("OCR found no text on page %(page)s; it is not part of the extracted document.") % {"page": i + 1})
         else:
             merged.append(next(valid_pages))
 

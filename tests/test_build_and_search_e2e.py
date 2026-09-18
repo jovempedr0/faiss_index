@@ -163,6 +163,31 @@ def test_embeddings_are_float32_in_memory_and_on_disk(make_index, fake_chat_prov
         assert np.load(out / "doctype" / f"doctype_{strategy}_embeddings.npy").dtype == np.float32
 
 
+def test_rebuild_removes_the_files_of_a_strategy_it_no_longer_produces(
+    make_index, fake_chat_provider, fake_structure_provider, tmp_path
+):
+    # Regression test: rebuilding into the same directory left a strategy's files from
+    # the previous build on disk when this build didn't produce it, and load_indices
+    # then served sections of a document no longer in the corpus.
+    out = _build_txt_corpus(make_index(embedding_dim=8), fake_chat_provider, tmp_path, ["Cabecalho\ncorpo antigo"])
+    (tmp_path / "data" / "doctype" / "doc0.txt").unlink()
+    (tmp_path / "data" / "doctype" / "novo.txt").write_text("documento novo", encoding="utf-8")
+    (out / "doctype" / "doctype_notes.txt").write_text("not the library's", encoding="utf-8")
+
+    rebuilder = make_index(embedding_dim=8, structure_provider=fake_structure_provider)  # finds no sections
+    rebuilder.build_indices(document_type="doctype", base_data_dir=str(tmp_path / "data"), output_index_dir=str(out))
+
+    assert sorted(p.name for p in (out / "doctype").iterdir()) == sorted(
+        [f"doctype_{strategy}{suffix}" for strategy in ("full", "chunks")
+         for suffix in (".index", "_metadata.json", "_embeddings.npy", "_embedding.json")]
+        + ["doctype_section_schema.json", "doctype_notes.txt"]
+    )
+    loaded = make_index(embedding_dim=8)
+    loaded.load_indices(str(out), ["doctype"], ["full", "sections", "chunks"], use_gpu=False)
+    assert set(loaded.indices["doctype"]) == {"full", "chunks"}
+    assert [Path(m["file"]).name for m in loaded.indices["doctype"]["full"][1]] == ["novo.txt"]
+
+
 def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_provider, tmp_path):
     # Regression test: build_indices filtered files with a case-sensitive
     # `p.suffix in SUPPORTED_FILE_EXTENSIONS`, so "DOC2.TXT" (or a scanned "X.PDF")
@@ -179,3 +204,65 @@ def test_build_indices_picks_up_upper_case_extensions(make_index, fake_chat_prov
 
     _, metadata, _ = idx.indices["doctype"]["full"]
     assert {Path(m["file"]).name for m in metadata} == {"doc1.txt", "DOC2.TXT"}
+
+
+def test_build_indices_uses_text_extractor_instead_of_reading_the_files(make_index, fake_chat_provider, tmp_path):
+    # The by-pass for documents this library can't extract on its own (scanned PDFs with
+    # no usable OCR here, formats handled by another pipeline): the files on disk are
+    # never parsed, only their paths are used, and the text comes from the extractor.
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True)
+    # Deliberately not a real PDF: parsing it would raise, so a passing build proves
+    # nothing here opened it.
+    (data_dir / "doctype" / "scan1.pdf").write_bytes(b"not a pdf at all")
+    (data_dir / "doctype" / "scan2.pdf").write_bytes(b"not a pdf either")
+
+    extracted = {
+        "scan1.pdf": "Texto do primeiro processo, extraido por fora sobre contratos.",
+        "scan2.pdf": "Texto do segundo processo, extraido por fora sobre pagamentos.",
+    }
+    seen = []
+
+    def extractor(file_path):
+        seen.append(file_path)
+        return extracted[Path(file_path).name]
+
+    idx = make_index(embedding_dim=8, text_extractor=extractor)
+    fake_chat_provider.responses.append({"sections": []})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+
+    assert {Path(p).name for p in seen} == {"scan1.pdf", "scan2.pdf"}
+    _, metadata, _ = idx.indices["doctype"]["full"]
+    # Real paths, so the index still points back at the files on disk.
+    assert {m["file"] for m in metadata} == {str(data_dir / "doctype" / name) for name in extracted}
+    # "full" keeps each document's own text in a 1-element list.
+    assert {m["content"][0] for m in metadata} == set(extracted.values())
+
+
+def test_build_indices_skips_a_file_whose_text_extractor_raised(make_index, fake_chat_provider, tmp_path):
+    # An extractor that fails for one document must not take the whole build down: the
+    # file is reported as unreadable (like any other read error) and the rest is indexed.
+    data_dir = tmp_path / "data"
+    (data_dir / "doctype").mkdir(parents=True)
+    (data_dir / "doctype" / "ok.pdf").write_bytes(b"irrelevant")
+    (data_dir / "doctype" / "broken.pdf").write_bytes(b"irrelevant")
+
+    def extractor(file_path):
+        if Path(file_path).name == "broken.pdf":
+            raise RuntimeError("upstream OCR service is down")
+        return "documento legivel sobre contratos"
+
+    idx = make_index(embedding_dim=8, text_extractor=extractor)
+    fake_chat_provider.responses.append({"sections": []})
+    idx.build_indices(document_type="doctype", base_data_dir=str(data_dir), output_index_dir=str(tmp_path / "out"))
+
+    _, metadata, _ = idx.indices["doctype"]["full"]
+    assert [Path(m["file"]).name for m in metadata] == ["ok.pdf"]
+
+
+def test_read_document_with_a_text_extractor_skips_the_extension_check(make_index):
+    # Direct calls aren't limited to SUPPORTED_FILE_EXTENSIONS anymore: what this library
+    # can parse says nothing about what someone else's extractor can.
+    idx = make_index(embedding_dim=8, text_extractor=lambda path: f"conteudo de {Path(path).name}")
+
+    assert idx.read_document("/algum/lugar/planilha.xlsx") == "conteudo de planilha.xlsx"
