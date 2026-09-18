@@ -157,7 +157,12 @@ class SectionSchemaMixin:
             "facts, grounds, requests, conclusion — but adapt the names to the actual "
             "document type, don't assume it's a legal document). For each section, list "
             "2 to 6 short words or phrases, in the document's language, that usually "
-            "appear on the line that marks the start of that section.\n\n"
+            f"appear on the line that marks the start of that section.\n\n"
+            f"Return at most {constants.MAX_SECTIONS_PER_SCHEMA} sections, the ones that "
+            "matter most: each one becomes a separate vector per document, so splitting "
+            "the same content into more sections dilutes it rather than describing it "
+            "better. Name each section with one or two words in snake_case (lowercase "
+            "letters and underscores only) — a name, not a description.\n\n"
             f"Sample documents:\n{samples_block}"
         )
 

@@ -81,15 +81,23 @@ class OpenAICompatibleChatProvider:
     is only required if `describe_image` is actually called.
     """
 
-    def __init__(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None, vision_model: Optional[str] = None):
+    def __init__(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
+                 vision_model: Optional[str] = None, temperature: float = 0.0):
         self.model = model
         self.vision_model = vision_model
+        # 0.0 by default: the one thing `complete_structured` is used for is calibrating
+        # a document type's section schema, which is written to disk and then decides how
+        # every document of that type is cut. Sampling made two runs over the same corpus
+        # return different sections, so an index rebuilt today segmented differently from
+        # the one rebuilt yesterday, for no reason anyone could see.
+        self.temperature = temperature
         self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
     def complete_structured(self, prompt: str, json_schema: dict) -> dict:
         response = self._client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
+            temperature=self.temperature,
             response_format={
                 "type": "json_schema",
                 "json_schema": {

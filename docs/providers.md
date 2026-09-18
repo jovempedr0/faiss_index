@@ -29,7 +29,10 @@ idx = FaissDocumentIndex(
 )
 ```
 
-`chat_provider` needs `complete_structured(prompt: str, json_schema: dict) -> dict` —
+`OpenAICompatibleChatProvider` takes a `temperature` (0.0 by default — see
+[the section schema](concepts.md#llm-calibrated-section-schema) for why calibration
+shouldn't sample). Any `chat_provider` of your own needs
+`complete_structured(prompt: str, json_schema: dict) -> dict` —
 called once per `document_type` to calibrate its section schema (see
 [LLM-calibrated section schema](concepts.md#llm-calibrated-section-schema)); how it gets structured
 JSON back from the underlying model (native structured output, prompt engineering,

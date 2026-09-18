@@ -31,6 +31,10 @@ DEFAULT_CHUNK_SIZE_WORDS = 500
 # Section schema calibration via LLM (register_document_type).
 MAX_SECTION_SAMPLE_DOCS = 5
 MAX_SECTION_SAMPLE_CHARS = 4000
+# Ceiling asked of the model in the calibration prompt. Each section is one vector per
+# document, so a schema that splits the same text into more, narrower sections spreads a
+# document's content thinner instead of describing it better.
+MAX_SECTIONS_PER_SCHEMA = 8
 
 # Min number of training points per cluster when sizing nlist in IVFFlat/IVFSQ8/IVFPQ.
 MIN_TRAINING_POINTS_PER_CLUSTER = 30
@@ -55,7 +59,11 @@ SECTION_SCHEMA_JSON_SCHEMA = {
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Short, descriptive section name, in snake_case."
+                        "description": (
+                            "Section name: one or two words in snake_case, lowercase letters and "
+                            "underscores only. No slashes, no punctuation, no alternative names "
+                            "(write 'header', never 'header_/_identifying_information')."
+                        )
                     },
                     "patterns": {
                         "type": "array",

@@ -46,6 +46,14 @@ text patterns that mark its start), which is done automatically by `build_indice
 (`{document_type}_section_schema.json`), so it only needs to be calibrated once per
 type.
 
+The call asks for it deterministically (`temperature=0` on the built-in
+`OpenAICompatibleChatProvider`) and for at most `constants.MAX_SECTIONS_PER_SCHEMA`
+sections, named in snake_case. Both matter more than they look: the schema is written to
+disk and then decides how every document of that type is cut, so a sampled answer meant
+the same corpus segmented differently on different days — and every extra section is one
+more vector per document, splitting a document's content thinner rather than describing
+it better.
+
 If the LLM can't identify any section (a document with no recognizable structure),
 the `sections` strategy is simply skipped for that type — `full` and `chunks` keep
 working normally.
