@@ -90,6 +90,50 @@ def test_create_embeddings_full_covers_text_past_the_embedding_input_limit(make_
     assert not np.allclose(full_embeddings[0], full_embeddings[1])
 
 
+def test_section_embeddings_cover_text_past_the_embedding_input_limit(make_index, fake_structure_provider):
+    # Regression test: a section was embedded in one call, truncated to
+    # MAX_EMBEDDING_INPUT_CHARS — two sections identical up to that point got the same
+    # vector no matter what followed (35 of 113 sections of a real legal corpus were
+    # longer than the limit). Both section builders share _build_section_embeddings.
+    from faiss_index import constants
+
+    shared_prefix = "prefixo " * 1100
+    assert len(shared_prefix) > constants.MAX_EMBEDDING_INPUT_CHARS
+    sections_by_file = {
+        "a.pdf": {"fundamentos": shared_prefix + "gato preto " * 150},
+        "b.pdf": {"fundamentos": shared_prefix + "cachorro branco " * 150},
+    }
+    fake_structure_provider.sections_by_file = sections_by_file
+    idx = make_index(embedding_dim=4, structure_provider=fake_structure_provider)
+    idx.section_schemas["doctype"] = {"fundamentos": ["prefixo"]}
+    docs = [(file_path, sections["fundamentos"]) for file_path, sections in sections_by_file.items()]
+
+    via_structure, _ = idx.create_embeddings_sections_via_structure(docs)
+    via_schema, _ = idx.create_embeddings_sections(docs, "doctype")
+
+    assert not np.allclose(via_structure[0], via_structure[1])
+    assert not np.allclose(via_schema[0], via_schema[1])
+
+
+def test_section_embeddings_are_the_normalized_mean_of_their_normalized_windows(make_index, fake_structure_provider):
+    long_text = " ".join(f"palavra{i}" for i in range(1000))  # 3 windows of 500 words (0, 250, 500)
+    fake_structure_provider.sections_by_file = {"a.pdf": {"curta": "uma  seção\ncurta", "longa": long_text, "vazia": "   "}}
+    idx = make_index(embedding_dim=4, structure_provider=fake_structure_provider, embedding_document_prefix="Document: ")
+
+    embeddings, metadata = idx.create_embeddings_sections_via_structure([("a.pdf", "")])
+
+    assert [m["section_name"] for m in metadata] == ["curta", "longa", "vazia"]
+    # The same windows (and document prefix) as the "chunks" strategy; the fake
+    # provider's vectors aren't unit-length, so both normalizations matter here.
+    for row, text in [(0, "uma  seção\ncurta"), (1, long_text)]:
+        window_embeddings, _ = idx.create_embeddings_chunks([("a.pdf", text)])
+        unit_windows = window_embeddings / np.linalg.norm(window_embeddings, axis=1, keepdims=True)
+        expected = unit_windows.mean(axis=0)
+        expected /= np.linalg.norm(expected)
+        assert np.allclose(embeddings[row], expected)
+    assert np.array_equal(embeddings[2], np.zeros(4))
+
+
 def test_create_embeddings_full_reuses_given_chunks_without_embedding_again(make_index, fake_embedding_provider):
     idx = make_index(embedding_dim=4)
     docs = [("a.txt", "primeiro documento"), ("b.txt", "segundo documento")]
