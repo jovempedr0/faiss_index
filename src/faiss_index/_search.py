@@ -16,6 +16,7 @@ from rank_bm25 import BM25Okapi
 from sklearn.metrics.pairwise import cosine_similarity
 
 from . import config
+from ._lifecycle import IndexLoadError
 from ._text_cleaning import clean_text
 from .i18n import _
 
@@ -534,6 +535,17 @@ class SearchMixin:
                 self.load_indices(path_indices=config.DEFAULT_PATH_INDICES,
                                 document_types=[document_type],
                                 strategies=[strategy])
+
+                if not self._is_single_index_loaded(document_type, strategy, require_gpu=False):
+                    # Checked without require_gpu on purpose: an index that stayed on the
+                    # CPU (no CUDA/faiss-gpu here) still answers searches, just slower —
+                    # what makes a search impossible is having no index at all.
+                    raise IndexLoadError(
+                        _("No index for '%(document_type)s/%(strategy)s': it isn't in memory and loading it "
+                          "from '%(path)s' produced nothing (see the log above for why). Build it with "
+                          "build_indices, or point FAISS_INDEX_PATH_INDICES at the directory that holds it.")
+                        % {"document_type": document_type, "strategy": strategy, "path": config.DEFAULT_PATH_INDICES}
+                    )
 
                 is_now_loaded = self.is_index_loaded(document_types=[document_type], strategies=[strategy], require_gpu=require_gpu)
                 logger.info(_("Index for '%(document_type)s/%(strategy)s' loaded - '%(is_now_loaded)s'. Running search...") % {"document_type": document_type, "strategy": strategy, "is_now_loaded": is_now_loaded})

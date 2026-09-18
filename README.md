@@ -424,6 +424,13 @@ server gets after starting) load it from disk once: the first one loads it and t
 others wait for it. Requests on an index that's already loaded don't wait on each
 other, nor on another index being loaded.
 
+If there's no index to load — never built, files missing from that directory, a
+corrupted index — it raises `IndexLoadError` (the log line before it says which of
+those it was). It doesn't return an empty list: that's the answer for a query that
+matched nothing, and a handler can't tell the two apart, so a broken deployment would
+keep answering with no sources instead of failing. An index that loads but has no good
+match still returns a list, empty or not.
+
 `k` (default 5), `use_hybrid`, and `rerank` are also accepted — `use_hybrid` switches
 to `evaluate_strategy_hybrid`, and `rerank` retrieves a larger candidate pool and
 narrows it to `k` via `rerank_results` (needs `rerank_provider` configured on the
@@ -550,6 +557,7 @@ OpenAI-compatible path) — see
   with `k` results (optionally via `evaluate_strategy_hybrid` and/or narrowed down
   with `rerank_results`), and returns just the found texts (chunks, sections or whole
   documents, depending on `strategy`).
+  Raises `IndexLoadError` when the index isn't in memory and can't be loaded.
 
 ### Lifecycle of the in-memory indices
 
