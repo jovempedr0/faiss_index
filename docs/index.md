@@ -30,3 +30,4 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
 | tune index type, batch sizes, thresholds, or change the log language | [Configuration and tuning](configuration.md) |
 | plug in your own embedding/chat/rerank/structure backend | [Providers and models](providers.md) |
 | know what lands on disk, or run the tests | [File layout and testing](operations.md) |
+| see what changed between versions, and what to do before upgrading | [Changelog](https://github.com/jovempedr0/faiss_index/blob/main/CHANGELOG.md) |
