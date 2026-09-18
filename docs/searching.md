@@ -68,6 +68,41 @@ the 4 windows BM25 ranks highest against the query are actually sent to the mode
 window of every candidate is accurate and unaffordable, about a minute per query on
 whole documents against 1.77 s this way.
 
+### Tuning it on your corpus
+
+Two numbers decide what reranking costs and what it recovers, and the right values
+depend on your documents, not on ours:
+
+- **Passages per candidate** (`constants.RERANK_PASSAGES_PER_CANDIDATE`, 4) and their size
+  (`RERANK_PASSAGE_WORDS`, 150) — how much of a long candidate the model actually reads.
+- **The candidate pool** — how many results retrieval hands over. The `rerank=True`
+  shortcut fixes it at `max(k * 4, 20)`; the two-step form above chooses it directly, by
+  the `k` passed to `evaluate_strategy` before `rerank_results` narrows it.
+
+Cost is roughly *pool x passages* cross-encoder pairs per query, so these multiply.
+
+**Measure the ceiling before sweeping anything.** A reranker can only reorder what it was
+given, so the pool's own recall — `evaluate_retrieval` at `k` = pool size, no reranking —
+is the highest score reranking could possibly reach. If the pool already misses the right
+document a tenth of the time, no amount of cross-encoder passes will find it.
+
+`fixtures/eval/tune_rerank.py` in this repository runs that sweep. What it found on one
+real corpus is offered as an illustration of the method, not as recommended values — 23
+documents and 64 questions, each labeled with a single correct file, is a small and very
+particular corpus:
+
+- The pool's ceiling was 98.4% while reranking delivered 89-91%, and nothing closed that
+  gap: 16x more compute (320 pairs per query against 20) moved recall by one question.
+  When reranking underperforms its ceiling, the cross-encoder is the thing to change, not
+  these constants.
+- Halving the passages per candidate changed no metric beyond noise and cut 18-37% of the
+  time, in all three strategies. Whether that holds where the answer is spread across a
+  document is exactly what your own sweep would tell you.
+- Shrinking the pool looked free on one strategy and cost 6 points of recall on the other
+  two — that strategy indexed whole documents, and there were only 23 of them, so its
+  "top 10" was nearly the whole corpus. A ceiling measured on a small corpus flatters
+  small pools.
+
 There's no default `rerank_provider` (unlike `embedding_provider`/`chat_provider`,
 which fall back to the OpenAI-compatible path) — reranking is an opt-in capability
 with a real new dependency, not something already built into the library. Any object
