@@ -4,6 +4,7 @@ pairs — reading files (with OCR fallback), calling the embedding provider, and
 three indexing strategies ("full", "sections", "chunks"). Composed into the class in
 `core.py`; not meant to be imported directly by users.
 """
+import codecs
 import logging
 import time
 from collections import defaultdict
@@ -15,6 +16,45 @@ from . import constants
 from .i18n import _
 
 logger = logging.getLogger(__name__)
+
+# Byte-order marks, longest first: UTF-32-LE's starts with UTF-16-LE's, so checking
+# UTF-16 first would read a UTF-32 file two bytes at a time. Each codec here consumes
+# the mark it matched, keeping it out of the text.
+_BYTE_ORDER_MARKS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
+def _decode_text_file(raw: bytes, file_path: str) -> str:
+    """
+    Decodes a .txt file's bytes: by its byte-order mark when it has one (the file's own
+    statement of its encoding, not a guess), else as UTF-8, else as
+    `constants.TEXT_FALLBACK_ENCODING`.
+
+    The fallback is what recovers text exported by Windows/legacy systems, which UTF-8
+    can't decode at all — but being single-byte it also decodes bytes that mean something
+    else in another encoding, so it's tried last and logged when it's what produced the
+    text. If it fails too, the UnicodeDecodeError propagates: `build_indices` reports
+    that file and carries on, which beats indexing mojibake.
+    """
+    for bom, encoding in _BYTE_ORDER_MARKS:
+        if raw.startswith(bom):
+            return raw.decode(encoding)
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode(constants.TEXT_FALLBACK_ENCODING)
+        logger.warning(
+            _("%(file_path)s is not valid UTF-8 and has no byte-order mark; read as "
+              "%(encoding)s. Check its accented characters if they look wrong.")
+            % {"file_path": file_path, "encoding": constants.TEXT_FALLBACK_ENCODING}
+        )
+        return text
 
 
 def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
@@ -77,8 +117,9 @@ class DocumentIngestionMixin:
     def read_document(self, file_path: str) -> str:
         """
         Reads the content of a document file.
-        If the file is a .txt, reads it directly as UTF-8 text. Otherwise (.pdf/.doc/.docx),
-        uses `extract_text_from_file_ocr_fallback` to extract the text (with OCR fallback).
+        If the file is a .txt, reads it directly (see `_decode_text_file` for how its
+        encoding is determined). Otherwise (.pdf/.doc/.docx), uses
+        `extract_text_from_file_ocr_fallback` to extract the text (with OCR fallback).
 
         A `text_extractor` given to the constructor replaces all of that: it's called for
         every path, so text extracted by a pipeline of your own (another OCR engine, a
@@ -103,8 +144,8 @@ class DocumentIngestionMixin:
             return self.text_extractor(file_path)
 
         if file_path.lower().endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
+            with open(file_path, 'rb') as f:
+                return _decode_text_file(f.read(), file_path)
         if file_path.lower().endswith(self.SUPPORTED_FILE_EXTENSIONS):
             # Imported here rather than at module level: utils_ocr needs the optional
             # [ocr] extra (pdfplumber/pytesseract/pdf2image/Pillow), which shouldn't be

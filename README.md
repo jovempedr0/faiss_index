@@ -618,7 +618,10 @@ see [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 ### Document reading/processing (used internally, but exposed)
 
 - **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback),
-  or delegates to the constructor's `text_extractor` when one was given.
+  or delegates to the constructor's `text_extractor` when one was given. A `.txt` file is
+  decoded by its byte-order mark when it has one (UTF-8/16/32, the mark stripped), else as
+  UTF-8, else as `constants.TEXT_FALLBACK_ENCODING` (`cp1252` — what Windows and older
+  systems export, logged as a warning when it's what worked).
 - **`extract_sections(text, document_type) -> Dict[str, str]`** — uses the calibrated schema.
 - **`get_embeddings(texts, prefix="") -> np.ndarray`** — generates embeddings in batches
   (`prefix` is prepended to each non-empty text).
