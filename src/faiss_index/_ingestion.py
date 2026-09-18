@@ -257,8 +257,7 @@ class DocumentIngestionMixin:
     def create_embeddings_sections_via_structure(self, docs: List[Tuple[str, str]]) -> Tuple[np.ndarray, List]:
         """
         Creates embeddings for sections extracted via `self.structure_provider`
-        (e.g. `providers.DoclingStructureProvider`) instead of the LLM-calibrated
-        pattern schema — each document's own real structure (heading hierarchy)
+        instead of the LLM-calibrated pattern schema — each document's own real structure (heading hierarchy)
         defines its sections, so no calibration is needed for the document_type.
 
         Parameters:

@@ -87,7 +87,9 @@ class FaissDocumentIndex(
         """
         Parameters:
             base_path (str): Base path where the documents are stored.
-            openai_key (Optional[str]): OpenAI API key. If None, looked up from .env.
+            openai_key (Optional[str]): OpenAI API key. If None, read from the
+                OPENAI_API_KEY environment variable (this package doesn't load a .env
+                by itself — see FAISS_INDEX_DOTENV_PATH).
                 To use an OpenAI-compatible API other than OpenAI's own (a local server —
                 LM Studio, oMLX, vLLM, etc.), set the `OPENAI_BASE_URL` environment
                 variable before instantiating; the OpenAI SDK reads it automatically
@@ -123,10 +125,10 @@ class FaissDocumentIndex(
                 strategy is built from this provider's `extract_sections(file_path)`
                 instead of the LLM-calibrated pattern schema (`register_document_type`/
                 `extract_sections`) — no calibration needed, each document's own
-                structure defines its sections. `providers.DoclingStructureProvider`
-                is the built-in option (needs the optional `docling` dependency:
-                `pip install -e ".[docling]"`). No default — like `rerank_provider`,
-                this is an opt-in capability, not part of the OpenAI-compatible path.
+                structure defines its sections. No default and no built-in
+                implementation: a layout parser is a heavy dependency with its own
+                failure modes, and which one fits depends on the documents — pass any
+                object with `extract_sections(file_path) -> Dict[str, str]`.
             text_extractor (Optional[Callable[[str], str]]): If set, `read_document`
                 calls it for every file instead of reading/OCR'ing it here — the way to
                 index text a pipeline of your own already extracted (another OCR engine,

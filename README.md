@@ -152,43 +152,40 @@ here" would cache that answer for the life of the instance (also stopping the sc
 disk from ever being loaded again) and delete a sections index that costs one embedding
 call per section to rebuild.
 
-#### Alternative: structure-aware extraction via Docling
+#### Alternative: sections from the document's own structure
 
 Pattern matching (above) works on already-flattened text, so it can't see real
 document structure — heading hierarchy, tables, layout. For that, pass a
-`structure_provider` on the constructor instead: `sections` is then built from each
-document's *actual* structure, with no schema to calibrate at all.
+`structure_provider` on the constructor: `sections` is then built from each document's
+*actual* structure, with no schema to calibrate at all.
 
 ```python
-from faiss_index.providers import DoclingStructureProvider
+class MyLayoutParser:                       # any object with this one method
+    def extract_sections(self, file_path: str) -> dict[str, str]:
+        return {"introducao": "...", "conclusao": "..."}
 
-idx = FaissDocumentIndex(
-    base_path="./data",
-    structure_provider=DoclingStructureProvider(),  # needs: pip install -e ".[docling]"
-)
+idx = FaissDocumentIndex(base_path="./data", structure_provider=MyLayoutParser())
 ```
 
-There's no default `structure_provider` (same reasoning as `rerank_provider`) — pass
-your own object implementing `extract_sections(file_path: str) -> Dict[str, str]`
-otherwise. One trade-off to know about: Docling parses the original file itself (it
-needs real layout, not text `read_document` already flattened), so each file gets
-processed twice when this is configured — once through the usual
-pdfplumber/pytesseract path for `full`/`chunks`, once through Docling for `sections`.
+There's no default and no built-in implementation (same reasoning as
+`rerank_provider`): a layout parser is a heavy dependency with its own failure modes,
+and which one fits depends on your documents. A previous version shipped one built on
+Docling; it was removed once the local OCR pipeline proved better on this corpus, and
+it's in the history (`git log -- src/faiss_index/providers.py`) if you want it as a
+starting point.
 
-**Broken-font PDFs:** some PDFs (a font-encoding issue with a broken/missing
-ToUnicode CMap, seen in some Brazilian court-generated documents) make Docling emit
-garbled text instead of real content. `DoclingStructureProvider` detects this per file
-(`providers._looks_corrupted`) and falls back to `utils_ocr.py`'s pdfplumber+OCR
-pipeline — the same one `full`/`chunks` already uses for these documents — to recover
-flat text. That document's `sections` output is then just a single `completo` entry,
-with no heading structure (same graceful degradation as when the LLM-calibrated schema
-finds no structure at all).
+Two things that cost real time to find out, if you write your own:
 
-Separately: `DoclingStructureProvider.__init__` disables Docling's own OCR by default
-(`do_ocr=False`) and sets `KMP_DUPLICATE_LIB_OK`/`OMP_NUM_THREADS` before importing
-Docling — both were needed to avoid a segfault (`faiss` and Docling's `torch`
-dependency each bundle their own OpenMP runtime, which crashed when both loaded in one
-process during testing on Python 3.14/macOS).
+- A parser reads the original file, not the text `read_document` already flattened, so
+  each file gets processed twice when this is configured — once through the usual
+  pdfplumber/OCR path for `full`/`chunks`, once through your parser for `sections`.
+- A torch-based parser bundles its own OpenMP runtime, and loading it in the same
+  process as `faiss` segfaulted on Python 3.14/macOS until `KMP_DUPLICATE_LIB_OK=TRUE`
+  and `OMP_NUM_THREADS=1` were set before importing it.
+
+Whatever it returns is used as-is: a document it can't parse into headings is best
+returned as a single entry with the flat text, which degrades the same way as an
+LLM-calibrated schema that finds no structure.
 
 ## Quickstart
 
@@ -848,10 +845,10 @@ way, except there's no default at all — pass `providers.CrossEncoderRerankProv
 `rerank(query: str, candidates: List[str]) -> List[float]`.
 
 `structure_provider` (see
-[Structure-aware extraction via Docling](#alternative-structure-aware-extraction-via-docling))
-is the same kind of opt-in, no-default capability — pass
-`providers.DoclingStructureProvider()` (needs `pip install -e ".[docling]"`) or your
-own object implementing `extract_sections(file_path: str) -> Dict[str, str]`.
+[Sections from the document's own structure](#alternative-sections-from-the-documents-own-structure))
+is the same kind of opt-in capability, except there's no built-in implementation at
+all — pass your own object implementing
+`extract_sections(file_path: str) -> Dict[str, str]`.
 
 ## The `config.py` and `constants.py` modules
 
@@ -958,7 +955,6 @@ own local dev setup (oMLX serving `jina-embeddings-v5-text-small-retrieval-mlx` 
 **CI:** `.github/workflows/tests.yml` runs the unit suite (Python 3.11 and 3.12) on
 every push/PR to `main`. It installs the `ocr` extra alongside `dev` — `core.py`
 imports `utils_ocr` unconditionally, so `pdfplumber`/`pytesseract`/`pdf2image`/`Pillow`
-are needed just to import the package, not only for real OCR calls. `rerank`/`docling`
-aren't installed: both are imported lazily inside their provider classes
-(`CrossEncoderRerankProvider`/`DoclingStructureProvider`), which the unit suite never
-instantiates. The integration test stays excluded, same as running `pytest` locally.
+are needed just to import the package, not only for real OCR calls. `rerank` isn't
+installed: it's imported lazily inside `CrossEncoderRerankProvider`, which the unit
+suite never instantiates. The integration test stays excluded, same as running `pytest` locally.
