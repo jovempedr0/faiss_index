@@ -290,7 +290,8 @@ The BM25 side is built lazily, in memory, from the metadata already loaded for t
 `document_type`/`strategy` (no extra files on disk, no LLM/embedding calls) and cached
 on the instance — invalidated automatically by `add_new_documents`/`unload_indices`/
 `load_indices`/`build_indices` (reloading or rebuilding a strategy already in memory
-drops its stale BM25 index too, not just adding/removing one).
+drops its stale BM25 index too, not just adding/removing one). Concurrent hybrid
+searches that find it not built yet build it once: the others wait for it.
 Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
 (whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
 `similarity`.
@@ -423,6 +424,18 @@ chunks = idx.generate_search_by_type(
 Works with any strategy: each returned text is a chunk for `strategy="chunks"`, a
 section for `"sections"`, or a whole document for `"full"`.
 
+Concurrent requests for an index that isn't loaded yet (e.g.: the first requests a
+server gets after starting) load it from disk once: the first one loads it and the
+others wait for it. Requests on an index that's already loaded don't wait on each
+other, nor on another index being loaded.
+
+If there's no index to load — never built, files missing from that directory, a
+corrupted index — it raises `IndexLoadError` (the log line before it says which of
+those it was). It doesn't return an empty list: that's the answer for a query that
+matched nothing, and a handler can't tell the two apart, so a broken deployment would
+keep answering with no sources instead of failing. An index that loads but has no good
+match still returns a list, empty or not.
+
 `k` (default 5), `use_hybrid`, and `rerank` are also accepted — `use_hybrid` switches
 to `evaluate_strategy_hybrid`, and `rerank` retrieves a larger candidate pool and
 narrows it to `k` via `rerank_results` (needs `rerank_provider` configured on the
@@ -544,10 +557,12 @@ OpenAI-compatible path) — see
   Emits a `DeprecationWarning`, like `calculate_heuristic_score`.
 
 - **`generate_search_by_type(received_query, document_type, strategy, require_gpu, k=5, use_hybrid=False, rerank=False) -> List[str]`**
-  High-level shortcut: loads the index if it's not already in memory, searches
+  High-level shortcut: loads the index if it's not already in memory (once, however
+  many concurrent calls need it), searches
   with `k` results (optionally via `evaluate_strategy_hybrid` and/or narrowed down
   with `rerank_results`), and returns just the found texts (chunks, sections or whole
   documents, depending on `strategy`).
+  Raises `IndexLoadError` when the index isn't in memory and can't be loaded.
 
 ### Lifecycle of the in-memory indices
 

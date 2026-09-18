@@ -1,8 +1,10 @@
+import threading
+
 import numpy as np
 import faiss
 import pytest
 
-from faiss_index import config
+from faiss_index import IndexLoadError, _search as search_module, config
 
 
 def _build_chunks_index(idx, texts):
@@ -227,6 +229,127 @@ def test_generate_search_by_type_loads_index_from_default_path_when_not_in_memor
     assert sorted(chunks) == ["texto dois", "texto um"]
 
 
+def _run_concurrently(n, target):
+    results, errors = [None] * n, []
+
+    def run(i):
+        try:
+            results[i] = target()
+        except Exception as e:
+            errors.append(e)
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results, errors
+
+
+def test_generate_search_by_type_concurrent_first_calls_load_the_index_once(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # Regression test: every concurrent request that found the index not loaded yet
+    # loaded it from disk itself — e.g. 8 requests right after a server starts meant 8
+    # loads of the same index files, 8x the I/O and peak memory.
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+    n_requests = 8
+    found_not_loaded, everyone_found_it_not_loaded, loads = set(), threading.Event(), []
+    real_is_loaded, real_load = idx._is_single_index_loaded, idx._load_single_strategy
+
+    def is_loaded(*args, **kwargs):
+        loaded = real_is_loaded(*args, **kwargs)
+        if not loaded:
+            found_not_loaded.add(threading.get_ident())
+            if len(found_not_loaded) == n_requests:
+                everyone_found_it_not_loaded.set()
+        return loaded
+
+    def load(*args, **kwargs):
+        # Holds the load back until every request has checked and found the index not
+        # loaded, so all of them are in the race whatever the thread scheduling.
+        loads.append(everyone_found_it_not_loaded.wait(timeout=10))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(idx, "_is_single_index_loaded", is_loaded)
+    monkeypatch.setattr(idx, "_load_single_strategy", load)
+
+    results, errors = _run_concurrently(
+        n_requests, lambda: idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=2)
+    )
+
+    assert errors == []
+    assert loads == [True]
+    assert all(sorted(chunks) == ["texto dois", "texto um"] for chunks in results)
+
+
+def test_generate_search_by_type_loading_one_index_does_not_block_searches_on_another(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+    idx.load_indices(str(output_dir), ["doctype"], ["full"], use_gpu=False)
+    loading, release, loaded = threading.Event(), threading.Event(), threading.Event()
+    real_load = idx._load_single_strategy
+
+    def slow_load(*args, **kwargs):
+        loading.set()
+        release.wait(timeout=5)
+        real_load(*args, **kwargs)
+        loaded.set()
+
+    monkeypatch.setattr(idx, "_load_single_strategy", slow_load)
+    loader = threading.Thread(target=idx.generate_search_by_type, args=("texto", "doctype", "chunks", False))
+    loader.start()
+    assert loading.wait(timeout=5)
+
+    full = idx.generate_search_by_type("texto um", "doctype", "full", require_gpu=False, k=1)
+    searched_while_chunks_was_loading = not loaded.is_set()
+    release.set()
+    loader.join()
+
+    assert full == ["texto um"]
+    assert searched_while_chunks_was_loading
+
+
+def test_generate_search_by_type_concurrent_hybrid_searches_build_bm25_once(make_index, monkeypatch):
+    # Regression test: every concurrent hybrid search that found no cached BM25 index
+    # built its own, tokenizing the whole corpus again (8 requests: 8 builds).
+    idx = make_index(embedding_dim=4)
+    _build_chunks_index(idx, ["texto um", "texto dois", "texto tres"])
+    n_requests = 8
+    found_it_missing, everyone_found_it_missing, builds = set(), threading.Event(), []
+
+    class RecordsMisses(dict):
+        def get(self, document_type, default=None):
+            per_strategy = super().get(document_type, default)
+            if "chunks" not in (per_strategy or {}):
+                found_it_missing.add(threading.get_ident())
+                if len(found_it_missing) == n_requests:
+                    everyone_found_it_missing.set()
+            return per_strategy
+
+    class HeldBackBM25(search_module.BM25Okapi):
+        def __init__(self, corpus):
+            # Holds the build back until every search has found the BM25 index missing,
+            # so all of them are in the race whatever the thread scheduling.
+            builds.append(everyone_found_it_missing.wait(timeout=10))
+            super().__init__(corpus)
+
+    idx._bm25_indices = RecordsMisses()
+    monkeypatch.setattr(search_module, "BM25Okapi", HeldBackBM25)
+
+    results, errors = _run_concurrently(
+        n_requests, lambda: idx.generate_search_by_type("texto dois", "doctype", "chunks", require_gpu=False, k=3, use_hybrid=True)
+    )
+
+    assert errors == []
+    assert builds == [True]
+    assert all(chunks == results[0] and len(chunks) == 3 for chunks in results)
+
+
 def test_generate_search_by_type_require_gpu_keeps_index_already_in_memory(
     make_index, fake_chat_provider, tmp_path, monkeypatch
 ):
@@ -270,3 +393,38 @@ def test_generate_search_by_type_default_k_is_five(make_index):
     chunks = idx.generate_search_by_type("texto", "doctype", "chunks", require_gpu=False)
 
     assert len(chunks) == 5
+
+
+def test_generate_search_by_type_raises_when_there_is_no_index_to_load(make_index, tmp_path, monkeypatch):
+    # Regression test: a document type that was never built, or whose files aren't where
+    # the server looks, used to come back as [] — the same answer as a query that matched
+    # nothing, so a search endpoint would happily serve an answer with no sources.
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(tmp_path / "vazio"))
+    idx = make_index(embedding_dim=4)
+
+    with pytest.raises(IndexLoadError, match="doctype/chunks"):
+        idx.generate_search_by_type("qualquer coisa", "doctype", "chunks", require_gpu=False)
+
+
+def test_generate_search_by_type_raises_when_the_index_file_is_corrupted(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um", "texto dois"])
+    (output_dir / "doctype" / "doctype_chunks.index").write_bytes(b"nao e um indice faiss")
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+
+    with pytest.raises(IndexLoadError):
+        idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False)
+
+
+def test_generate_search_by_type_does_not_raise_for_an_index_that_loads(
+    make_index, fake_chat_provider, tmp_path, monkeypatch
+):
+    # The error is about a missing index, never about a query that found nothing: a
+    # working index that simply has no good match still returns a (possibly empty) list.
+    output_dir = _build_on_disk(make_index(embedding_dim=4), fake_chat_provider, tmp_path, ["texto um"])
+    monkeypatch.setattr(config, "DEFAULT_PATH_INDICES", str(output_dir))
+    idx = make_index(embedding_dim=4)
+
+    assert idx.generate_search_by_type("texto um", "doctype", "chunks", require_gpu=False, k=1) == ["texto um"]

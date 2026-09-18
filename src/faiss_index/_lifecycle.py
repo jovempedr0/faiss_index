@@ -22,6 +22,17 @@ from .i18n import _
 logger = logging.getLogger(__name__)
 
 
+class IndexLoadError(RuntimeError):
+    """
+    Raised when a search needs an index that isn't in memory and couldn't be loaded —
+    files missing from `config.DEFAULT_PATH_INDICES`, a corrupted index, a document type
+    or strategy that was never built. The reason is in the log line right before it
+    (`load_indices` warns about missing files and logs read errors). Returning no results
+    instead would be indistinguishable from a query that genuinely matched nothing, which
+    reads, downstream, as an answer with no sources rather than as a broken deployment.
+    """
+
+
 class IndexLifecycleMixin:
 
     def is_index_loaded(self, document_types: list[str], strategies: list[str], require_gpu: bool) -> bool:
