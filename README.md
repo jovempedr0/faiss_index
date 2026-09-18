@@ -14,7 +14,7 @@ Studio, oMLX, vLLM, etc.); any other backend can be plugged in instead — see
   **sections** (structural sections, with an LLM-calibrated schema), and **chunks**
   (sliding text windows).
 - Automatic FAISS index type selection by corpus size (`flat` → `IVFFlat` →
-  `IVFPQ`), with CPU parallelism.
+  `IVFSQ8`), with CPU parallelism.
 
 ## Table of contents
 
@@ -610,25 +610,47 @@ middle of the code:
 |---|---|
 | `embedding_batch_size` | How many texts go per call to the embeddings API (fewer round-trips). |
 | `num_threads` | Threads FAISS uses for search (`None` = all cores). |
-| `index_type` | `"auto"` (by size) or fixed: `"flat"`, `"ivf_flat"`, `"ivf_pq"`. |
+| `index_type` | `"auto"` (by size) or fixed: `"flat"`, `"ivf_flat"`, `"ivf_sq8"`, `"ivf_pq"`. |
 | `auto_index_thresholds` | `(flat_limit, ivf_flat_limit)` used when `index_type="auto"`. Defaults to `(10_000, 80_000)`. |
-| `ivf_nlist` / `ivf_nprobe` | Number of clusters / clusters visited per search in `ivf_flat`/`ivf_pq`. |
-| `pq_m` / `pq_nbits` | Compression parameters for `ivf_pq`. |
+| `ivf_nlist` / `ivf_nprobe` | Number of clusters / clusters visited per search in `ivf_flat`/`ivf_sq8`/`ivf_pq`. |
+| `pq_m` / `pq_nbits` | Compression parameters for `ivf_pq` (see its recall cost below). |
 | `use_mps` | *Deprecated, no effect.* Used to run `flat` searches on Apple Silicon's GPU via torch; that measured 2.5–7x slower than FAISS's CPU search at every size tested (1.3k–200k vectors), so the path was removed. |
 
 Automatic index type selection (`index_type="auto"`, the default):
 
 - `n ≤ auto_index_thresholds[0]` → `IndexFlatL2` (exact search)
 - `auto_index_thresholds[0] < n ≤ auto_index_thresholds[1]` → `IndexIVFFlat` (approximate)
-- `n > auto_index_thresholds[1]` → `IndexIVFPQ` (approximate + compressed)
+- `n > auto_index_thresholds[1]` → `IndexIVFScalarQuantizer` with 8-bit codes,
+  `"ivf_sq8"` (approximate + compressed: 1 byte per dimension instead of 4)
+
+How much each approximate kind keeps of the exact top-10, on 10,824 real 1024-dim
+embeddings (the fixture court documents chunked at 60 words) and 57 real questions,
+all with `nlist=104` and `nprobe=8`:
+
+| `index_type` | Recall@10 vs. exact | Same top-1 | Code size per vector |
+|---|---|---|---|
+| `ivf_flat` | 95.3% | 96% | 4,096 bytes |
+| `ivf_sq8` | 95.1% | 96% | 1,024 bytes |
+| `ivf_pq` (`pq_m=8`) | 48.1% | 14% | 8 bytes |
+| `ivf_pq` (`pq_m=64`) | 70.9% | 63% | 64 bytes |
+
+`ivf_pq` is never chosen automatically: it's for when memory matters more than
+retrieval quality, and raising `nprobe` doesn't recover its recall (the loss is in
+the codes themselves — `pq_m=8` gave the same 48.1% at `nprobe=64`); raising `pq_m`
+(it must divide the embedding dimension) helps only partly. Its `reconstruct`ed
+vectors are just as coarse, so `evaluate_strategy`'s `similarity` is off by up to
+0.27 there (under 0.001 for `ivf_sq8`).
 
 `IndexIVFPQ` needs at least `2**pq_nbits` vectors to train its product quantizer (256
 with the default `pq_nbits=8`) — a separate, higher floor than `ivf_nlist`'s own
 minimum. Below it, `_build_faiss_index` falls back to `IndexIVFFlat` for that
-corpus (with a warning) instead of letting FAISS raise a training error. Only
-reachable with `index_type="ivf_pq"` forced explicitly, or `auto_index_thresholds`
-lowered well below the default `80_000` — the default thresholds never route a
-corpus that small into `ivf_pq`.
+corpus (with a warning) instead of letting FAISS raise a training error. `ivf_sq8`
+likewise falls back to `IndexIVFFlat` below 1,000 vectors
+(`constants.MIN_SQ8_TRAINING_POINTS`): its quantizer learns each dimension's value
+range from the vectors it's built with and clips vectors added later to it, and
+ranges learned from too few vectors clip too much. Both are only reachable with
+`index_type` forced explicitly, or `auto_index_thresholds` lowered far below their
+defaults.
 
 ## Models used
 

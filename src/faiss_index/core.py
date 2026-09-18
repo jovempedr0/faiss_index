@@ -44,7 +44,7 @@ class FaissDocumentIndex(
       - `DocumentIngestionMixin` (`_ingestion.py`): reading files and turning them
         into (embeddings, metadata) for the "full"/"sections"/"chunks" strategies.
       - `FaissIndexBackendMixin` (`_index_backend.py`): FAISS index construction
-        (flat/IVFFlat/IVFPQ) and the low-level dense-search path.
+        (flat/IVFFlat/IVFSQ8/IVFPQ) and the low-level dense-search path.
       - `IndexLifecycleMixin` (`_lifecycle.py`): build/save/load/unload and
         adding new documents to already-loaded indices.
       - `SearchMixin` (`_search.py`): dense/hybrid search, reranking, strategy
@@ -55,8 +55,9 @@ class FaissDocumentIndex(
     from sample documents (see `register_document_type`) and cached per type.
 
     The FAISS index type is chosen by corpus size when `index_type="auto"` (the
-    default): Flat (exact) for small corpora, IVFFlat/IVFPQ (approximate, faster
-    and lighter on memory) for medium/large corpora. See `_build_faiss_index`.
+    default): Flat (exact) for small corpora, IVFFlat (approximate, faster) for
+    medium ones, IVFSQ8 (approximate, also lighter on memory) for large ones. See
+    `_build_faiss_index`.
     """
 
     SUPPORTED_FILE_EXTENSIONS = constants.SUPPORTED_FILE_EXTENSIONS
@@ -128,14 +129,21 @@ class FaissDocumentIndex(
                 embeddings API. Defaults to 100.
             num_threads (Optional[int]): Number of threads FAISS should use for search.
                 If None, uses all available cores (os.cpu_count()).
-            index_type (str): "auto" (chosen by size), or fixed: "flat", "ivf_flat", "ivf_pq".
+            index_type (str): "auto" (chosen by size), or fixed: "flat", "ivf_flat",
+                "ivf_sq8", "ivf_pq". "auto" never picks "ivf_pq": its codes are small but
+                lossy (with the default pq_m=8 it kept 48% of the exact top-10 on real
+                1024-dim embeddings, vs 95% for "ivf_sq8") — only for when memory matters
+                more than retrieval quality.
             auto_index_thresholds (Tuple[int, int]): (flat_limit, ivf_flat_limit) used
-                when index_type="auto". Defaults to (10_000, 80_000).
-            ivf_nlist (Optional[int]): Number of clusters for IVFFlat/IVFPQ. If None, uses
-                approximately sqrt(n), adjusted down if there aren't enough vectors.
-            ivf_nprobe (int): How many clusters are visited per search in IVFFlat/IVFPQ
-                (higher = more accurate and slower). Defaults to 8.
-            pq_m (int): Number of sub-quantizers for IVFPQ. Must divide embedding_dim.
+                when index_type="auto": "flat" up to the first, "ivf_flat" up to the
+                second, "ivf_sq8" above it. Defaults to (10_000, 80_000).
+            ivf_nlist (Optional[int]): Number of clusters for IVFFlat/IVFSQ8/IVFPQ. If
+                None, uses approximately sqrt(n), adjusted down if there aren't enough vectors.
+            ivf_nprobe (int): How many clusters are visited per search in
+                IVFFlat/IVFSQ8/IVFPQ (higher = more accurate and slower). Defaults to 8.
+            pq_m (int): Number of sub-quantizers for IVFPQ (bytes per vector, with
+                pq_nbits=8). Must divide embedding_dim. Defaults to 8; higher keeps
+                more of the recall (64: 71% of the exact top-10 in the measurement above).
             pq_nbits (int): Bits per sub-quantizer for IVFPQ. Defaults to 8.
             use_mps (Optional[bool]): Deprecated, no effect (emits a DeprecationWarning
                 when passed). It used to route "flat" index searches through torch on

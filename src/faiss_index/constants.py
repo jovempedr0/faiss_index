@@ -26,8 +26,15 @@ DEFAULT_CHUNK_SIZE_WORDS = 500
 MAX_SECTION_SAMPLE_DOCS = 5
 MAX_SECTION_SAMPLE_CHARS = 4000
 
-# Min number of training points per cluster when sizing nlist in IVFFlat/IVFPQ.
+# Min number of training points per cluster when sizing nlist in IVFFlat/IVFSQ8/IVFPQ.
 MIN_TRAINING_POINTS_PER_CLUSTER = 30
+
+# Min number of training points for IVFSQ8's scalar quantizer, which learns each
+# dimension's [min, max] range from them and clips any vector added later (e.g. via
+# add_new_documents) to that range. Few points give ranges too narrow for later
+# vectors: on real 1024-dim embeddings, training on 300 / 1000 / all 10.8k of them
+# and then adding all 10.8k gave recall@10 98.2% / 98.9% / 99.6% (probing every list).
+MIN_SQ8_TRAINING_POINTS = 1000
 
 # JSON Schema (provider-agnostic — no OpenAI-specific envelope) describing the
 # structured output requested in the chat call that infers the section schema of a
