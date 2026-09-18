@@ -2,7 +2,8 @@
 Text normalization used by FaissDocumentIndex's BM25 tokenizing (`_search.py`'s
 `_tokenize_for_bm25`) and by `generate_search_by_type`'s empty-query check — not for
 the text sent to embedding/rerank models, which read natural language (stopword
-removal would drop words like "não"). Kept as plain functions in their own module (not methods
+removal would drop words like "não") — plus `word_windows`, the word-window split
+both indexing and reranking cut long text with. Kept as plain functions in their own module (not methods
 on the class) so `_search.py` can import them without a circular import back into
 `core.py`.
 """
@@ -67,3 +68,21 @@ def clean_text(text:str) -> list[str]:
     text = text.lower()                  # Lowercase
     text = remove_stop_words(text)  # Uses the .text attribute to get the string
     return [text.strip()]
+
+
+def word_windows(text: str, chunk_size: int) -> list[str]:
+    """
+    Splits `text` into windows of `chunk_size` words overlapping by half, the last one
+    reaching the end of the text — the "chunks" strategy's windows, also pooled into
+    each section's vector (`_embed_pooled_windows`) and used to cut a long candidate
+    into passages a cross-encoder can read whole (`_passages_for_rerank`).
+    """
+    words = text.split()
+    windows = []
+    for start in range(0, len(words), chunk_size // 2):
+        windows.append(' '.join(words[start:start + chunk_size]))
+        if start + chunk_size >= len(words):
+            # This window already reaches the end of the document: any later
+            # start would only produce a window entirely contained in this one.
+            break
+    return windows

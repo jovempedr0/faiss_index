@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from . import constants
+from ._text_cleaning import word_windows
 from .i18n import _
 
 logger = logging.getLogger(__name__)
@@ -70,23 +71,6 @@ def _mean_pool(vectors: np.ndarray) -> np.ndarray:
     both normalizations matter.
     """
     return _l2_normalize(_l2_normalize(vectors).mean(axis=0))
-
-
-def _word_windows(text: str, chunk_size: int) -> List[str]:
-    """
-    Splits `text` into windows of `chunk_size` words overlapping by half, the last one
-    reaching the end of the text — the "chunks" strategy's windows, also pooled into
-    each section's vector (`_embed_pooled_windows`).
-    """
-    words = text.split()
-    windows = []
-    for start in range(0, len(words), chunk_size // 2):
-        windows.append(' '.join(words[start:start + chunk_size]))
-        if start + chunk_size >= len(words):
-            # This window already reaches the end of the document: any later
-            # start would only produce a window entirely contained in this one.
-            break
-    return windows
 
 
 class DocumentIngestionMixin:
@@ -317,7 +301,7 @@ class DocumentIngestionMixin:
         windows: List[str] = []
         rows_by_text: List[range] = []
         for text in texts:
-            text_windows = _word_windows(text, constants.DEFAULT_CHUNK_SIZE_WORDS)
+            text_windows = word_windows(text, constants.DEFAULT_CHUNK_SIZE_WORDS)
             rows_by_text.append(range(len(windows), len(windows) + len(text_windows)))
             windows.extend(text_windows)
 
@@ -348,7 +332,7 @@ class DocumentIngestionMixin:
         all_metadata = []
 
         for file_path, content in docs:
-            chunks = _word_windows(content, chunk_size)
+            chunks = word_windows(content, chunk_size)
 
             for i, chunk in enumerate(chunks):
                 if chunk:

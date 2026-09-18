@@ -15,9 +15,9 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from sklearn.metrics.pairwise import cosine_similarity
 
-from . import config
+from . import config, constants
 from ._lifecycle import IndexLoadError
-from ._text_cleaning import clean_text, tokenize_accent_folded
+from ._text_cleaning import clean_text, tokenize_accent_folded, word_windows
 from .i18n import _
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,40 @@ class SearchMixin:
             "results": results,
         }
 
+    def _passages_for_rerank(self, query: str, text: str) -> List[str]:
+        """
+        The windows of `text` worth spending a cross-encoder pass on.
+
+        A cross-encoder reads a fixed number of tokens and silently drops the rest, so a
+        long candidate passed whole is scored by its opening — on the real corpus that
+        took "full"'s recall@5 from 79.7% to 31.2%. Splitting it into windows fixes the
+        reading but not the cost: a 118k-character document is ~240 windows, and scoring
+        every window of every candidate took about a minute per query.
+
+        BM25 picks the windows to keep, over that candidate's own windows, with the same
+        accent-folded tokenizing the lexical side of hybrid search uses. It costs nothing
+        next to a cross-encoder pass, and the windows it drops are the ones that don't
+        contain the query's terms at all.
+        """
+        windows = word_windows(text, constants.RERANK_PASSAGE_WORDS)
+        if not windows:
+            return [text]
+        if len(windows) <= constants.RERANK_PASSAGES_PER_CANDIDATE:
+            return windows
+
+        corpus = [self._tokenize_for_bm25(window) for window in windows]
+        query_tokens = self._tokenize_for_bm25(query)
+        # A query of nothing but stopwords, or windows that tokenize to nothing, leave
+        # BM25 with no signal to rank by (and no average document length to divide by).
+        if not query_tokens or not any(corpus):
+            return windows[:constants.RERANK_PASSAGES_PER_CANDIDATE]
+
+        scores = BM25Okapi(corpus).get_scores(query_tokens)
+        best = np.argsort(scores)[::-1][:constants.RERANK_PASSAGES_PER_CANDIDATE]
+        # Back into reading order: the model scores each window on its own, but a human
+        # reading the debug output shouldn't have to reassemble the document.
+        return [windows[i] for i in sorted(best)]
+
     def rerank_results(self, query: str, results: List[Dict], k: Optional[int] = None) -> List[Dict]:
         """
         Reorders a search's results with `self.rerank_provider` — a cross-encoder (or
@@ -232,7 +266,18 @@ class SearchMixin:
             return []
 
         candidates = [self._extract_metadata_text(r["metadata"]) for r in results]
-        scores = self.rerank_provider.rerank(query, candidates)
+        passages, owners = [], []
+        for position, text in enumerate(candidates):
+            for passage in self._passages_for_rerank(query, text):
+                passages.append(passage)
+                owners.append(position)
+
+        # One call for every passage of every candidate: the provider batches them, and
+        # a candidate scores as its best passage (MaxP) rather than as its first one.
+        passage_scores = self.rerank_provider.rerank(query, passages)
+        scores = [float("-inf")] * len(candidates)
+        for position, score in zip(owners, passage_scores):
+            scores[position] = max(scores[position], score)
 
         reranked = sorted(zip(results, scores), key=lambda pair: pair[1], reverse=True)[:k]
         return [

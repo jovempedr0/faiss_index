@@ -59,6 +59,15 @@ for r in top5:
     print(r["rank"], r["rerank_score"], r["metadata"]["file"])
 ```
 
+A cross-encoder reads a fixed number of tokens (512 for the default model, roughly 350
+words of Portuguese) and silently ignores the rest, so a candidate longer than that
+would be judged by its opening alone — which is most of a court document. Candidates
+are split into 150-word windows instead, and each one scores as its best window. Only
+the 4 windows BM25 ranks highest against the query are actually sent to the model
+(`constants.RERANK_PASSAGE_WORDS` / `RERANK_PASSAGES_PER_CANDIDATE`): scoring every
+window of every candidate is accurate and unaffordable, about a minute per query on
+whole documents against 1.77 s this way.
+
 There's no default `rerank_provider` (unlike `embedding_provider`/`chat_provider`,
 which fall back to the OpenAI-compatible path) — reranking is an opt-in capability
 with a real new dependency, not something already built into the library. Any object
@@ -95,10 +104,13 @@ report = idx.evaluate_retrieval(
 at whether the returned text actually contains the answer; `avg_result_chars` at how
 much text you'd hand to an LLM to get it. Read them together: `full` finds the right
 file easily by returning whole documents (on a real 23-document legal corpus: 89% file
-recall at ~146k characters per result, vs. 98% for `chunks` at ~3.4k). Reranking is
-also meant for short texts — cross-encoders only read the beginning of a long input,
-so on that corpus `rerank=True` dropped `full` to 32% and `sections` to 56% while
-`chunks` stayed at 98%. Writing the labeled queries by hand is the most reliable;
+recall at ~146k characters per result, vs. 98% for `chunks` at ~3.4k). Reranking helps most
+exactly where retrieval is weakest: on that corpus (64 labeled questions, hybrid, k=5)
+`rerank=True` took `full` from 79.7% to 89.1% recall and `sections` from 84.4% to
+89.1%, and left `chunks` where it was at 89.1% — a chunk is already about the size of
+one passage, so there is little for the reranker to pick between. It costs 1.77 s per
+query on `full` against 0.03 s without it, so it is worth it when you're returning long
+texts and not worth it on `chunks`. Writing the labeled queries by hand is the most reliable;
 having an LLM write one question per sampled chunk (keeping the chunk as
 `relevant_text`) is a quick way to get started.
 

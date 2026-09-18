@@ -36,6 +36,16 @@ MAX_SECTION_SAMPLE_CHARS = 4000
 # document's content thinner instead of describing it better.
 MAX_SECTIONS_PER_SCHEMA = 8
 
+# Reranking long texts. A cross-encoder reads a fixed window (512 tokens for the default
+# model, roughly 350 words of Portuguese), so a candidate handed over whole is judged by
+# its opening alone: reranking "full" documents that way took recall@5 from 79.7% to
+# 31.2% on the real corpus. Long candidates are cut into these windows instead, and the
+# candidate takes its best window's score. Scoring every window is what made the first
+# attempt at this unaffordable (~1 min/query on "full"), so only the best
+# RERANK_PASSAGES_PER_CANDIDATE by BM25 against the query are actually scored.
+RERANK_PASSAGE_WORDS = 150
+RERANK_PASSAGES_PER_CANDIDATE = 4
+
 # Min number of training points per cluster when sizing nlist in IVFFlat/IVFSQ8/IVFPQ.
 MIN_TRAINING_POINTS_PER_CLUSTER = 30
 
