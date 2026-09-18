@@ -152,7 +152,9 @@ class FaissDocumentIndex(
             ivf_nlist (Optional[int]): Number of clusters for IVFFlat/IVFSQ8/IVFPQ. If
                 None, uses approximately sqrt(n), adjusted down if there aren't enough vectors.
             ivf_nprobe (int): How many clusters are visited per search in
-                IVFFlat/IVFSQ8/IVFPQ (higher = more accurate and slower). Defaults to 8.
+                IVFFlat/IVFSQ8/IVFPQ (higher = more accurate and slower). Defaults to 32,
+                which held >=98.7% of the exact top-10 in every corpus geometry measured,
+                where 8 fell to 92.5%.
             pq_m (int): Number of sub-quantizers for IVFPQ (bytes per vector, with
                 pq_nbits=8). Must divide embedding_dim. Defaults to 8; higher keeps
                 more of the recall (64: 71% of the exact top-10 in the measurement above).

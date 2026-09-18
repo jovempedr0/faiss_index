@@ -136,3 +136,12 @@ def test_ivf_sq8_index_saves_loads_and_takes_new_documents(make_index, tmp_path)
     assert np.allclose(index.reconstruct(len(texts)), idx.get_embeddings(["conteudo novo"])[0], atol=0.5)
     top = idx.evaluate_strategy("conteudo novo", "contrato", "chunks", k=1)["results"][0]
     assert top["similarity"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_built_ivf_indices_use_the_default_nprobe(make_index):
+    # Regression test: nprobe was 8, which kept only 92.5% of the exact top-10 at 100k
+    # vectors once the benchmark corpus stopped being tightly clustered.
+    idx = make_index(embedding_dim=8, index_type="ivf_flat")
+    embeddings = np.random.default_rng(0).random((300, 8), dtype=np.float32)
+    index = idx._build_faiss_index(embeddings)
+    assert index.nprobe == 32

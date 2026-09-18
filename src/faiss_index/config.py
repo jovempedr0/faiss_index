@@ -48,7 +48,11 @@ DEFAULT_SECTION_EXTRACTION_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_BATCH_SIZE = 100
 DEFAULT_INDEX_TYPE = "auto"
 DEFAULT_AUTO_INDEX_THRESHOLDS = (10_000, 80_000)
-DEFAULT_IVF_NPROBE = 8
+# 8 kept only 92.5-94.3% of the exact top-10 at 100k vectors once the benchmark corpus
+# was given realistic (less tightly clustered) geometry; 32 kept >=98.7% across every
+# geometry tested, for 1.88 ms/query instead of 0.52 at 500k — against 18.95 ms for exact
+# search. See fixtures/eval/benchmark_index_defaults.py.
+DEFAULT_IVF_NPROBE = 32
 DEFAULT_PQ_M = 8
 DEFAULT_PQ_NBITS = 8
 
