@@ -47,7 +47,11 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_SECTION_EXTRACTION_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_BATCH_SIZE = 100
 DEFAULT_INDEX_TYPE = "auto"
-DEFAULT_AUTO_INDEX_THRESHOLDS = (10_000, 80_000)
+# Exact search up to 100k vectors: it costs 3.80 ms/query there and the same memory an
+# ivf_flat would take (391 MiB), so the old 10k limit traded ~5 points of recall for
+# ~3 ms. ivf_sq8 starts at 250k, where its quarter-size codes (489 MiB against 1957 at
+# 500k) start to matter. See fixtures/eval/benchmark_index_defaults.py.
+DEFAULT_AUTO_INDEX_THRESHOLDS = (100_000, 250_000)
 # 8 kept only 92.5-94.3% of the exact top-10 at 100k vectors once the benchmark corpus
 # was given realistic (less tightly clustered) geometry; 32 kept >=98.7% across every
 # geometry tested, for 1.88 ms/query instead of 0.52 at 500k — against 18.95 ms for exact

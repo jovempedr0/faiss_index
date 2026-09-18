@@ -145,3 +145,13 @@ def test_built_ivf_indices_use_the_default_nprobe(make_index):
     embeddings = np.random.default_rng(0).random((300, 8), dtype=np.float32)
     index = idx._build_faiss_index(embeddings)
     assert index.nprobe == 32
+
+
+def test_default_auto_thresholds_match_the_measured_tiers(make_index):
+    # Regression test: the limits were (10_000, 80_000), which handed corpora to
+    # approximate search to save ~3 ms/query and cost recall to do it.
+    idx = make_index()
+    assert idx._select_index_kind(100_000) == "flat"
+    assert idx._select_index_kind(100_001) == "ivf_flat"
+    assert idx._select_index_kind(250_000) == "ivf_flat"
+    assert idx._select_index_kind(250_001) == "ivf_sq8"

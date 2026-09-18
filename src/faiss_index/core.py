@@ -148,7 +148,7 @@ class FaissDocumentIndex(
                 more than retrieval quality.
             auto_index_thresholds (Tuple[int, int]): (flat_limit, ivf_flat_limit) used
                 when index_type="auto": "flat" up to the first, "ivf_flat" up to the
-                second, "ivf_sq8" above it. Defaults to (10_000, 80_000).
+                second, "ivf_sq8" above it. Defaults to (100_000, 250_000).
             ivf_nlist (Optional[int]): Number of clusters for IVFFlat/IVFSQ8/IVFPQ. If
                 None, uses approximately sqrt(n), adjusted down if there aren't enough vectors.
             ivf_nprobe (int): How many clusters are visited per search in
