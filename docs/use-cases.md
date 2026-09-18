@@ -15,11 +15,22 @@ The most direct use: retrieve passages, put them in a prompt.
 to concatenate — no result objects to unwrap.
 
 Start with `strategy="chunks"` and `use_hybrid=True`; add `rerank=True` when precision at
-the top matters more than latency. On the reference corpus (23 court documents, 57
-labeled questions), `chunks` with hybrid search answered with the right passage in the
-top 5 for 86% of the questions, at a recall of 98% and MRR 0.806 — see
-[Comparing strategies](searching.md#comparing-strategies-and-picking-the-best-one) for
-how to measure the same thing on your own corpus.
+the top matters more than latency. On the reference corpus (23 Brazilian court documents,
+64 labeled questions, `k=5`):
+
+| Strategy | Search | Recall@5 | MRR | Passage@5 | Chars per result |
+|---|---|---|---|---|---|
+| `chunks` | hybrid | 89.1% | 0.814 | 79.7% | 3,476 |
+| `chunks` | dense | 81.2% | 0.659 | 64.1% | 3,505 |
+| `sections` | hybrid | 84.4% | 0.728 | 57.8% | 30,411 |
+| `full` | hybrid | 79.7% | 0.649 | 84.4% | 117,894 |
+
+Read those as a starting point, not a promise: 64 questions is a small sample, where a
+2-3 point difference is noise, and each one is labeled with a single correct file, so a
+question generic enough for several documents to answer counts every other answer as a
+miss. [Comparing strategies](searching.md#comparing-strategies-and-picking-the-best-one)
+shows how to measure this on your own corpus, which is the only number that should decide
+anything.
 
 ### A search endpoint
 

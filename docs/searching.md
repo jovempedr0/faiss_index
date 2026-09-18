@@ -29,7 +29,9 @@ Both the indexed texts and the query are tokenized with `clean_text` (lowercase,
 punctuation, Portuguese stopwords removed) and with **accents folded**, so a query
 typed without accents ("execucao da sentenca") matches "execução da sentença" — on a
 real 23-document legal corpus, accentless queries got the same results as accented
-ones (`chunks` hybrid recall@5 93% → 98%, BM25-only passage@5 61% → 84%). Only the
+ones (`chunks` hybrid recall@5 93% → 98%, BM25-only passage@5 61% → 84%, measured on
+the corpus as it was extracted then — see
+[Where this fits](use-cases.md#suggested-applications) for today's baseline). Only the
 BM25 side is normalized like this; dense search and reranking read the query as typed.
 Each result carries `rrf_score` (used for ranking) and `dense_rank`/`bm25_rank`
 (whichever list(s) it came from) instead of `evaluate_strategy`'s `distance`/
