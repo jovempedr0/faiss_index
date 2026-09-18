@@ -1,0 +1,50 @@
+name: Docs
+
+# Builds on every PR that touches the docs (so a broken link fails review, not the
+# deploy) and publishes from main.
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', 'mkdocs.yml', '.github/workflows/docs.yml']
+  pull_request:
+    paths: ['docs/**', 'mkdocs.yml', '.github/workflows/docs.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Pinned: the Material team warns MkDocs 2.0 breaks themes and plugins
+      # with no migration path, and this workflow must not break on its release.
+      - run: pip install "mkdocs-material>=9,<10" "mkdocs<2"
+      # --strict turns a broken internal link or a page missing from the nav into a
+      # failed build: these pages cross-reference each other constantly.
+      - run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Only from main: a pull request build checks the links without publishing.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

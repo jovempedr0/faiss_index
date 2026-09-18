@@ -1,0 +1,54 @@
+site_name: FaissDocumentIndex
+site_description: Semantic indexing and search over documents of any type, on FAISS with pluggable providers.
+site_url: https://jovempedr0.github.io/faiss_index/
+repo_url: https://github.com/jovempedr0/faiss_index
+repo_name: jovempedr0/faiss_index
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+  palette:
+    # The site follows the reader's system setting, with a manual toggle.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Where this fits: use-cases.md
+  - Installation and setup: installation.md
+  - Core concepts: concepts.md
+  - Quickstart: quickstart.md
+  - Indexing: indexing.md
+  - Searching: searching.md
+  - API reference: api.md
+  - Configuration and tuning: configuration.md
+  - Providers and models: providers.md
+  - File layout and testing: operations.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
+
+# A link to a page or anchor that doesn't exist fails the build under --strict,
+# which is what the docs workflow runs: these pages link to each other constantly.
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
