@@ -10,6 +10,13 @@ import pytest
 from faiss_index import utils_ocr
 
 
+def _raise(error):
+    """Returns a function that raises `error` whatever it's called with."""
+    def _raiser(*args, **kwargs):
+        raise error
+    return _raiser
+
+
 def test_importing_utils_ocr_does_not_silence_the_host_applications_warnings():
     # Regression test: utils_ocr called warnings.filterwarnings("ignore") at import
     # time — a process-wide filter that silenced every warning in the host application
@@ -405,3 +412,60 @@ def test_extract_text_from_file_ocr_fallback_returns_empty_string_on_error(monke
     monkeypatch.setattr(utils_ocr, "process_pdf_file", boom)
 
     assert utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf") == ""
+
+
+# --- a page whose OCR failed -------------------------------------------------
+
+def test_process_image_raises_when_the_vision_model_call_fails(monkeypatch):
+    # Regression test: any exception here used to become "", and merge_ocr_results then
+    # dropped the page — so a timeout or a 500 from the server running the OCR model
+    # silently removed that page from the document.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", "glm-ocr")
+    monkeypatch.setattr(utils_ocr, "_ocr_via_vlm", _raise(ConnectionError("connection refused")))
+
+    with pytest.raises(utils_ocr.OCRPageError, match="glm-ocr"):
+        utils_ocr.process_image("fake-image")
+
+
+def test_process_image_raises_when_tesseract_fails(monkeypatch):
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", None)
+    monkeypatch.setattr(utils_ocr, "preprocess_image", lambda img: img)
+    monkeypatch.setattr(utils_ocr.pytesseract, "image_to_string", _raise(RuntimeError("tesseract crashed")))
+
+    with pytest.raises(utils_ocr.OCRPageError, match="tesseract"):
+        utils_ocr.process_image("fake-image")
+
+
+def test_process_image_still_returns_empty_text_for_a_blank_page(monkeypatch):
+    # No failure: the page simply has nothing on it. That must stay a normal result.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", None)
+    monkeypatch.setattr(utils_ocr, "preprocess_image", lambda img: img)
+    monkeypatch.setattr(utils_ocr.pytesseract, "image_to_string", lambda img, lang, config: "   ")
+
+    assert utils_ocr.process_image("fake-image") == ""
+
+
+def test_run_ocr_on_images_propagates_a_failed_page(monkeypatch):
+    def fail_on_second(img):
+        if img == 1:
+            raise utils_ocr.OCRPageError("page 1 failed")
+        return "ok"
+
+    monkeypatch.setattr(utils_ocr, "process_image", fail_on_second)
+
+    with pytest.raises(utils_ocr.OCRPageError):
+        utils_ocr.run_ocr_on_images({0: 0, 1: 1}, max_workers=2)
+
+
+def test_extract_text_from_file_ocr_fallback_does_not_swallow_a_failed_page(monkeypatch):
+    monkeypatch.setattr(utils_ocr, "process_pdf_file", _raise(utils_ocr.OCRPageError("page failed")))
+
+    with pytest.raises(utils_ocr.OCRPageError):
+        utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf")
+
+
+def test_merge_ocr_results_warns_about_the_page_it_drops(caplog):
+    with caplog.at_level("WARNING"):
+        assert utils_ocr.merge_ocr_results(["t0"], [1], {1: ""}) == ["t0"]
+
+    assert "page 2" in caplog.text

@@ -29,11 +29,30 @@ _VLM_DETECTION_TAG_RE = re.compile(r'<\|det\|>.*?<\|/det\|>([^<]*)')
 TESSERACT_LANG = 'por'
 
 
-class OCRUnavailableError(RuntimeError):
+class OCRError(RuntimeError):
+    """
+    Base for OCR failures that must not be turned into missing text. Extraction errors
+    elsewhere in here degrade to an empty string — one file this library couldn't read —
+    but a page whose OCR *failed* is indistinguishable, downstream, from a page that
+    genuinely holds no text, and would be indexed as a document that is quietly
+    incomplete.
+    """
+
+
+class OCRUnavailableError(OCRError):
     """
     Raised when pages need OCR but tesseract can't run it at all here — not installed,
     or missing the language data. A setup problem rather than something wrong with one
     page or file, so it isn't swallowed like the other per-page/per-file errors.
+    """
+
+
+class OCRPageError(OCRError):
+    """
+    Raised when the OCR backend failed on a page: a tesseract crash, or — the likely one
+    when `config.OCR_VLM_MODEL` is set — a timeout, a connection error or an HTTP error
+    from the server running the vision model. Fails the document rather than dropping
+    that page from it.
     """
 
 
@@ -146,7 +165,7 @@ def extract_text_from_file_ocr_fallback(file_path: str, ocr_dpi: int = 300, max_
             temp_pdf_path = convert_any_to_pdf(file_path, temp_dir)
             return process_pdf_file(temp_pdf_path, ocr_dpi, max_workers)
 
-    except OCRUnavailableError:
+    except OCRError:
         raise
     except Exception as e:
         logger.error(_("Error processing file %(file_path)s: %(error)s") % {"file_path": file_path, "error": e})
@@ -384,10 +403,11 @@ def process_image(img, lang=TESSERACT_LANG):
             (Portuguese). Not used when OCR runs via `config.OCR_VLM_MODEL`.
 
     Returns:
-        str: Text extracted from the image. Returns an empty string on error.
+        str: Text extracted from the image (empty if the page genuinely has no text).
 
-    Exceptions:
-        On error during processing, a warning is logged and an empty string is returned.
+    Raises:
+        OCRPageError: If the OCR backend failed on this page — its text is unknown, and
+            returning "" would silently drop the page from the document (see `OCRError`).
     """
     try:
         if config.OCR_VLM_MODEL:
@@ -400,8 +420,12 @@ def process_image(img, lang=TESSERACT_LANG):
         )
         return text.strip()
     except Exception as e:
-        logger.warning(_("Error in image OCR: %(error)s") % {"error": e})
-        return ""
+        raise OCRPageError(
+            _("OCR failed on a page (%(backend)s): %(error)s") % {
+                "backend": f"vision model '{config.OCR_VLM_MODEL}'" if config.OCR_VLM_MODEL else f"tesseract '{lang}'",
+                "error": e,
+            }
+        ) from e
 
 
 def run_ocr_on_images(images: dict[int, Any], max_workers: int) -> dict[int, str]:
@@ -450,6 +474,12 @@ def merge_ocr_results(all_text: list[str], problematic_pages: list[int], ocr_res
             text = ocr_results.get(i, "")
             if text:
                 merged.append(text)
+            else:
+                # OCR ran and came back with nothing. A blank page reads exactly like
+                # this, so it isn't an error — but it's the one case where the document
+                # legitimately ends up shorter than its page count, and silence here is
+                # what made missing pages impossible to notice.
+                logger.warning(_("OCR found no text on page %(page)s; it is not part of the extracted document.") % {"page": i + 1})
         else:
             merged.append(next(valid_pages))
 
