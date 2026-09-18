@@ -1,7 +1,7 @@
 import logging
 import os
 import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import faiss
 import numpy as np
@@ -70,6 +70,7 @@ class FaissDocumentIndex(
                  chat_provider: Optional[ChatProvider] = None,
                  rerank_provider: Optional[RerankProvider] = None,
                  structure_provider: Optional[StructureProvider] = None,
+                 text_extractor: Optional[Callable[[str], str]] = None,
                  embedding_batch_size: int = config.DEFAULT_EMBEDDING_BATCH_SIZE,
                  num_threads: Optional[int] = None,
                  index_type: str = config.DEFAULT_INDEX_TYPE,
@@ -124,6 +125,14 @@ class FaissDocumentIndex(
                 is the built-in option (needs the optional `docling` dependency:
                 `pip install -e ".[docling]"`). No default — like `rerank_provider`,
                 this is an opt-in capability, not part of the OpenAI-compatible path.
+            text_extractor (Optional[Callable[[str], str]]): If set, `read_document`
+                calls it for every file instead of reading/OCR'ing it here — the way to
+                index text a pipeline of your own already extracted (another OCR engine,
+                a cache, a database). It receives the file path `build_indices` found
+                and returns that document's text; raising is fine (`build_indices` logs
+                the file as unreadable and moves on). Discovery still only picks up
+                `SUPPORTED_FILE_EXTENSIONS` files, and `metadata["file"]` still holds
+                the real path, so nothing else in the pipeline changes.
             embedding_batch_size (int): How many texts are sent per call to the
                 embeddings API. Defaults to 100.
             num_threads (Optional[int]): Number of threads FAISS should use for search.
@@ -202,6 +211,7 @@ class FaissDocumentIndex(
         )
         self.rerank_provider = rerank_provider
         self.structure_provider = structure_provider
+        self.text_extractor = text_extractor
         self.embedding_dim = self.embedding_provider.dimension
 
         logger.info(_("Initialized FaissDocumentIndex with model %(model)s and dimension %(dim)s") % {"model": getattr(self.embedding_provider, "model", embedding_model), "dim": self.embedding_dim})

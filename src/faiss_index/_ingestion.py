@@ -80,6 +80,10 @@ class DocumentIngestionMixin:
         If the file is a .txt, reads it directly as UTF-8 text. Otherwise (.pdf/.doc/.docx),
         uses `extract_text_from_file_ocr_fallback` to extract the text (with OCR fallback).
 
+        A `text_extractor` given to the constructor replaces all of that: it's called for
+        every path, so text extracted by a pipeline of your own (another OCR engine, a
+        cache, a database) can be indexed without this library reading the file at all.
+
         Parameters:
             file_path (str): Path to the document file.
 
@@ -87,10 +91,17 @@ class DocumentIngestionMixin:
             str: Text content extracted from the file.
 
         Raises:
-            ValueError: If `file_path`'s extension isn't in `SUPPORTED_FILE_EXTENSIONS`.
+            ValueError: If `file_path`'s extension isn't in `SUPPORTED_FILE_EXTENSIONS`
+                (not checked when a `text_extractor` handles the file).
             ImportError: If it's a .pdf/.doc/.docx and the optional OCR dependencies
                 (`pip install -e ".[ocr]"`) aren't installed.
         """
+        if self.text_extractor is not None:
+            # Before the extension check too: what this library can parse says nothing
+            # about what someone else's extractor can (build_indices still only *finds*
+            # SUPPORTED_FILE_EXTENSIONS files, so this only widens direct calls).
+            return self.text_extractor(file_path)
+
         if file_path.lower().endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()

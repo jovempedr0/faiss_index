@@ -76,6 +76,8 @@ pip install -e ".[ocr]"
    `pytesseract` can be swapped for a vision-capable chat model via
    `FAISS_INDEX_OCR_VLM_MODEL` — see
    [The `config.py` and `constants.py` modules](#the-configpy-and-constantspy-modules).
+   None of this is needed if your own pipeline already extracts the text: see
+   [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 
 ## Core concepts
 
@@ -459,6 +461,34 @@ including the added ones — and the section schema), in the layout `load_indice
 reads. Saving over the directory the indices were loaded from is safe. Reloading or
 unloading a strategy before saving discards what was added to it.
 
+### Indexing text extracted elsewhere
+
+Everything above assumes this library extracts the text (`read_document`: direct read
+for `.txt`, `pdfplumber` + OCR fallback for the rest). When another pipeline already
+does that — a different OCR engine, a document-understanding API, a cache or database
+filled by an earlier job — pass a `text_extractor` and it is used instead, for every
+file:
+
+```python
+def extract(file_path: str) -> str:
+    return my_ocr_service.extract(file_path)  # or: cache[file_path], db.fetch(...), ...
+
+idx = FaissDocumentIndex(base_path="./data", text_extractor=extract)
+idx.build_indices(document_type="contract", base_data_dir="./data", output_index_dir="./faiss_index")
+```
+
+`build_indices` still walks the directory and still records the real file path in each
+entry's `metadata["file"]` — only the extraction step changes, so chunking, sections,
+search and the on-disk layout behave exactly as they do otherwise. Nothing here opens
+the files, so the `[ocr]` extra isn't needed and neither is a working tesseract.
+An extractor that raises for one file is treated like any other read error: that
+document is logged and skipped, the build carries on.
+
+For documents arriving one at a time into an index that's already loaded, the same text
+can go straight to
+[`add_new_documents`](#adding-documents-without-rebuilding-the-index), which takes
+`(file_path, text)` pairs and never reads the file either.
+
 ### Managing memory in long-running processes
 
 In a process that serves multiple requests (e.g.: a server), load on demand and
@@ -477,7 +507,7 @@ idx.unload_all_indices()  # everything
 
 ## API reference
 
-### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
+### `FaissDocumentIndex(base_path, openai_key=None, embedding_model="text-embedding-3-large", embedding_dim=None, section_extraction_model="gpt-4o-mini", embedding_provider=None, chat_provider=None, rerank_provider=None, structure_provider=None, text_extractor=None, embedding_batch_size=100, num_threads=None, index_type="auto", auto_index_thresholds=(10_000, 80_000), ivf_nlist=None, ivf_nprobe=8, pq_m=8, pq_nbits=8, use_mps=None, embedding_query_prefix="", embedding_document_prefix="")`
 
 Constructor. Every indexing/performance parameter has a sensible default, but none
 is fixed — see [Performance configuration](#performance-configuration).
@@ -486,6 +516,8 @@ built from `openai_key`/`embedding_model`/`section_extraction_model`; `rerank_pr
 `structure_provider` have no default at all (opt-in capabilities, not part of the
 OpenAI-compatible path) — see
 [Plugging in a custom provider](#plugging-in-a-custom-provider).
+`text_extractor` replaces `read_document`'s own extraction with a callable of yours —
+see [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 
 ### Building indices
 
@@ -576,7 +608,8 @@ OpenAI-compatible path) — see
 
 ### Document reading/processing (used internally, but exposed)
 
-- **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback).
+- **`read_document(file_path) -> str`** — reads `.txt/.pdf/.doc/.docx` (with OCR fallback),
+  or delegates to the constructor's `text_extractor` when one was given.
 - **`extract_sections(text, document_type) -> Dict[str, str]`** — uses the calibrated schema.
 - **`get_embeddings(texts, prefix="") -> np.ndarray`** — generates embeddings in batches
   (`prefix` is prepended to each non-empty text).
