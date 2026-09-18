@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from faiss_index import utils_ocr
 
 
@@ -250,6 +252,7 @@ def test_convert_pdf_to_images_no_problematic_pages_renders_nothing(monkeypatch)
 # --- process_problematic_pages (orchestration, real merge_ocr_results) -------
 
 def test_process_problematic_pages_orchestrates_convert_ocr_and_merge(monkeypatch):
+    monkeypatch.setattr(utils_ocr, "_ensure_tesseract_can_ocr", lambda lang: None)
     monkeypatch.setattr(
         utils_ocr, "convert_pdf_to_images",
         lambda file_path, problematic_pages, temp_dir, ocr_dpi: {1: "fake-image"},
@@ -261,6 +264,82 @@ def test_process_problematic_pages_orchestrates_convert_ocr_and_merge(monkeypatc
     )
 
     assert result == ["t0", "texto via ocr"]
+
+
+# --- OCR that can't run at all ----------------------------------------------
+
+def test_ensure_tesseract_can_ocr_reports_a_missing_binary(monkeypatch):
+    def raise_not_found(config):
+        raise utils_ocr.pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", raise_not_found)
+
+    with pytest.raises(utils_ocr.OCRUnavailableError, match="not installed"):
+        utils_ocr._ensure_tesseract_can_ocr("por")
+
+
+def test_ensure_tesseract_can_ocr_reports_missing_language_data(monkeypatch):
+    # What `apt install tesseract-ocr` alone leaves you with: the binary works, but it
+    # can't read Portuguese, so every scanned page would OCR to nothing.
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng", "osd"])
+
+    with pytest.raises(utils_ocr.OCRUnavailableError, match="por.traineddata"):
+        utils_ocr._ensure_tesseract_can_ocr("por")
+
+
+def test_ensure_tesseract_can_ocr_accepts_an_installed_language(monkeypatch):
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng", "por"])
+
+    assert utils_ocr._ensure_tesseract_can_ocr("por") is None
+
+
+def test_process_problematic_pages_fails_before_rendering_when_ocr_cannot_run(monkeypatch):
+    # Regression test: without this check every page's own tesseract call failed, was
+    # logged as a generic per-page warning and became empty text, so a fully scanned
+    # document was indexed as if it had no content at all.
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng"])
+    rendered = []
+    monkeypatch.setattr(
+        utils_ocr, "convert_pdf_to_images",
+        lambda *a, **k: rendered.append(a) or {1: "fake-image"},
+    )
+
+    with pytest.raises(utils_ocr.OCRUnavailableError):
+        utils_ocr.process_problematic_pages(
+            "fake.pdf", all_text=["t0"], problematic_pages=[1], ocr_dpi=300, max_workers=None,
+        )
+
+    assert rendered == [], "pages were rendered before finding out OCR can't run"
+
+
+def test_process_problematic_pages_skips_the_tesseract_check_when_a_vlm_does_the_ocr(monkeypatch):
+    # FAISS_INDEX_OCR_VLM_MODEL replaces pytesseract entirely, so its language data is
+    # irrelevant — nothing about the local tesseract install should block that path.
+    monkeypatch.setattr(utils_ocr.config, "OCR_VLM_MODEL", "glm-ocr")
+    monkeypatch.setattr(utils_ocr.pytesseract, "get_languages", lambda config: ["eng"])
+    monkeypatch.setattr(
+        utils_ocr, "convert_pdf_to_images",
+        lambda file_path, problematic_pages, temp_dir, ocr_dpi: {1: "fake-image"},
+    )
+    monkeypatch.setattr(utils_ocr, "run_ocr_on_images", lambda images, max_workers: {1: "texto via vlm"})
+
+    result = utils_ocr.process_problematic_pages(
+        "fake.pdf", all_text=["t0"], problematic_pages=[1], ocr_dpi=300, max_workers=None,
+    )
+
+    assert result == ["t0", "texto via vlm"]
+
+
+def test_extract_text_from_file_ocr_fallback_does_not_swallow_ocr_unavailable(monkeypatch):
+    # Every other failure in here becomes "" (one unreadable file, not a broken setup);
+    # this one must reach the caller, or the whole corpus silently indexes as empty.
+    def raise_unavailable(file_path, ocr_dpi, max_workers):
+        raise utils_ocr.OCRUnavailableError("no tesseract")
+
+    monkeypatch.setattr(utils_ocr, "process_pdf_file", raise_unavailable)
+
+    with pytest.raises(utils_ocr.OCRUnavailableError):
+        utils_ocr.extract_text_from_file_ocr_fallback("caso.pdf")
 
 
 # --- extract_text_from_file_ocr_fallback (orchestration) ---------------------

@@ -79,6 +79,15 @@ pip install -e ".[ocr]"
    None of this is needed if your own pipeline already extracts the text: see
    [Indexing text extracted elsewhere](#indexing-text-extracted-elsewhere).
 
+   Tesseract also needs the **`por` language data** (`por.traineddata`), which
+   `apt install tesseract-ocr` does *not* include — install `tesseract-ocr-por`
+   (Debian/Ubuntu) or `tesseract-lang` (Homebrew), or point `TESSDATA_PREFIX` at a
+   tessdata directory that has it. Without it, a document with scanned pages raises
+   `utils_ocr.OCRUnavailableError` instead of quietly losing those pages: OCR that
+   can't run at all is a setup problem, and swallowing it means indexing documents
+   that look complete but aren't. `FAISS_INDEX_OCR_VLM_MODEL` and `text_extractor`
+   both bypass this check entirely — neither uses tesseract.
+
 ## Core concepts
 
 ### `document_type` — never hardcoded
